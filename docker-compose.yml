@@ -1,3 +1,5 @@
+name: whisper-stt  # pinned: keeps the running container when the folder is renamed (STT-Suite)
+
 services:
   whisper:
     image: whisper-stt
