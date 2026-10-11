@@ -1,0 +1,6 @@
+# Without an NVIDIA GPU (or its driver in Docker): the service runs on the CPU only.
+#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+# The base file reserves every GPU for the container, which Docker refuses on a machine without one.
+services:
+  whisper:
+    deploy: !reset null
