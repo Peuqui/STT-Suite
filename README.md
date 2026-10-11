@@ -45,6 +45,10 @@ docker compose up -d --build
 curl http://localhost:5080/health
 ```
 
+Without an NVIDIA GPU, or without its driver in Docker, the base file stops with “could not select device
+driver "nvidia"”: add the CPU file, `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build`
+(it takes the GPU reservation away).
+
 The service listens on port **5080**. Models are cached in the Docker volume `whisper_models`
 and survive rebuilds. The container restarts with Docker (`restart: unless-stopped`).
 
