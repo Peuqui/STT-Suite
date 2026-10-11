@@ -1,10 +1,16 @@
-# whisper-stt
+# STT-Suite
 
 Spracherkennung als kleiner HTTP-Dienst in Docker, auf Basis von
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) und NVIDIA
 [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3). Ein laufender Container bedient alle
 Programme auf dem Rechner – [AIfred Intelligence](https://github.com/Peuqui/AIfred-Intelligence)
 und [Agent-Orc](https://github.com/Peuqui/Agent-Orc) nutzen ihn für die Spracheingabe.
+
+STT-Suite ist die eine Hälfte eines Paars: Sie hört zu, [TTS-Suite](https://github.com/Peuqui/TTS-Suite)
+spricht. Beide sind eigene Dienste, die jedes Programm mit wenigen HTTP-Aufrufen nutzen kann, und
+keiner hängt von den Programmen ab, die ihn nutzen. Sie teilen Konventionen: ein `GET /health` bei
+jedem Dienst, Fehler als JSON und eine README auf Deutsch und auf Englisch. (Der Docker-Container
+behält seinen Namen `whisper-stt`, damit ein laufender nicht neu angelegt wird.)
 
 [English version](README.md)
 
@@ -34,7 +40,7 @@ lässt sich jederzeit nachtragen, danach den Container neu starten.
 ## Start
 
 ```
-git clone https://github.com/Peuqui/whisper-stt.git && cd whisper-stt
+git clone https://github.com/Peuqui/STT-Suite.git && cd STT-Suite
 docker compose up -d --build
 curl http://localhost:5080/health
 ```
@@ -117,6 +123,12 @@ für andere Sprachen Whisper nehmen.
 
 Parakeet braucht kein Hugging-Face-Token; das Modell (≈3 GB, beide Qualitäten) wird beim
 ersten Gebrauch ins Modell-Volume geladen.
+
+## Sicherheit
+
+Der Dienst hat keine Anmeldung, und `docker-compose.yml` veröffentlicht Port 5080 auf allen Adressen
+des Rechners. Halte ihn hinter einer Firewall oder veröffentliche ihn nur auf der Loopback-Adresse
+(`"127.0.0.1:5080:5052"`), wenn nur Programme auf demselben Rechner ihn nutzen.
 
 ## Lizenz
 

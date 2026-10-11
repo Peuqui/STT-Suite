@@ -1,10 +1,16 @@
-# whisper-stt
+# STT-Suite
 
 Speech-to-text as a small HTTP service in Docker, built on
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and NVIDIA
 [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3). One running container serves
 every client on the machine — [AIfred Intelligence](https://github.com/Peuqui/AIfred-Intelligence)
 and [Agent-Orc](https://github.com/Peuqui/Agent-Orc) use it for voice input.
+
+STT-Suite is one half of a pair: it listens, [TTS-Suite](https://github.com/Peuqui/TTS-Suite)
+speaks. Each is a service of its own that any program can use through a few HTTP calls, and
+neither depends on the programs that use it. They share conventions: a `GET /health` on every
+service, errors as JSON, and a README in German and in English. (The Docker container keeps
+its name `whisper-stt`, so a running one is not recreated.)
 
 [Deutsche Version](README.de.md)
 
@@ -34,7 +40,7 @@ and restart the container.
 ## Start
 
 ```
-git clone https://github.com/Peuqui/whisper-stt.git && cd whisper-stt
+git clone https://github.com/Peuqui/STT-Suite.git && cd STT-Suite
 docker compose up -d --build
 curl http://localhost:5080/health
 ```
@@ -115,6 +121,12 @@ dropped anything; int8 makes more word errors (about Whisper medium's level). Pa
 
 Parakeet needs no Hugging Face token; its model (≈3 GB, both qualities) is downloaded into
 the model volume on first use.
+
+## Security
+
+The service has no login, and `docker-compose.yml` publishes port 5080 on every address of the
+machine. Keep it behind a firewall, or publish it on the loopback address only
+(`"127.0.0.1:5080:5052"`) when only programs on the same machine use it.
 
 ## License
 
