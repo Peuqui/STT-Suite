@@ -45,6 +45,10 @@ docker compose up -d --build
 curl http://localhost:5080/health
 ```
 
+Ohne NVIDIA-Grafikkarte, oder ohne deren Treiber in Docker, bricht die Basisdatei mit „could not select device
+driver "nvidia"“ ab: Die CPU-Datei dazunehmen, `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build`
+(sie nimmt die GPU-Reservierung weg).
+
 Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `whisper_models` und
 überstehen einen Neubau. Der Container startet mit Docker neu (`restart: unless-stopped`).
 
