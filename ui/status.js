@@ -38,10 +38,15 @@ export function statusView({ show, fail }) {
     await load()
   }
 
+  // What a device is set to, as "engine model": a Whisper size or "parakeet-<precision>".
+  const configured = (device) => {
+    const engine = status[`${device}_engine`]
+    return `${engine} ${engine === 'parakeet' ? status[`${device}_quality`] : status[`${device}_model`]}`
+  }
+
   function cpuRow() {
-    if (status.parakeet_cpu_loaded) return { engine: 'parakeet', model: `parakeet-${status.parakeet_cpu_loaded}`, loaded: true }
-    if (status.cpu_loaded) return { engine: 'whisper', model: status.cpu_model, loaded: true }
-    return { loaded: false }
+    if (!status.cpu_loaded) return { loaded: false }
+    return { engine: status.cpu_loaded_engine, model: status.cpu_loaded_model, loaded: true }
   }
 
   function gpuRow() {
@@ -49,7 +54,7 @@ export function statusView({ show, fail }) {
     const left = status.gpu_ttl_remaining_seconds
     const ttl = status.gpu_ttl_minutes === 0 ? t('ttlOff') : left === undefined ? '' : t('ttlLeft', { time: duration(left) })
     return {
-      engine: status.gpu_engine, model: status.gpu_model_loaded, loaded: true, busy: status.gpu_busy,
+      engine: status.gpu_loaded_engine, model: status.gpu_loaded_model, loaded: true, busy: status.gpu_busy,
       details: [t('card', { index: status.gpu_device_index, pid: status.gpu_worker_pid }), ttl].filter(Boolean).join(' · '),
     }
   }
@@ -73,8 +78,8 @@ export function statusView({ show, fail }) {
         h('button', { onclick: () => unload('cpu'), disabled: !cpu.loaded }, t('unloadCpu')),
         h('button', { onclick: () => unload('all') }, t('unloadAll')),
         offerForce ? h('button', { class: 'primary', onclick: () => unload('gpu', true) }, t('force')) : null),
-      cardTable([t('device'), t('engine'), t('model'), t('state'), t('details')],
-        rows.map(([name, row]) => [t(name), row.engine ?? '', row.model ?? '', stateOf(row), row.details ?? ''])),
+      cardTable([t('device'), t('configured'), t('engine'), t('model'), t('state'), t('details')],
+        rows.map(([name, row]) => [t(name), configured(name), row.engine ?? '', row.model ?? '', stateOf(row), row.details ?? ''])),
     )
   }
 

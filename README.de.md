@@ -14,15 +14,18 @@ behält seinen Namen `whisper-stt`, damit ein laufender nicht neu angelegt wird.
 
 [English version](README.md)
 
-- **Zwei Engines, pro Anfrage gewählt:** Whisper oder Parakeet (siehe unten).
+- **Zwei Engines, jede Mischung je Gerät:** Whisper (eine Größe von `tiny` bis `large-v3`) oder Parakeet (fp32 oder int8),
+  für die CPU und für die GPU unabhängig eingestellt: Parakeet int8 auf der CPU und Whisper large-v3 auf der GPU geht ebenso wie
+  andersherum. Eine Anfrage kann Engine, Modell und Genauigkeit überschreiben.
 - **CPU und GPU, pro Anfrage gewählt.** Das CPU-Modell bleibt dauerhaft geladen (keine
   Ladezeit, kein VRAM). Das GPU-Modell wird bei Bedarf auf die Karte mit dem meisten freien
   VRAM geladen und nach einer einstellbaren Leerlaufzeit wieder freigegeben.
-- **Kein stiller Gerätewechsel.** Hat keine GPU Platz, antwortet `/transcribe` mit `503`; der
-  Aufrufer entscheidet, ob er stattdessen die CPU nimmt.
-- **Modellwahl nach freiem VRAM.** Die GPU versucht das eingestellte Modell (Standard
-  `large-v3`) und steigt bei knappem VRAM auf kleinere ab, aber nie unter
-  `WHISPER_GPU_MIN_MODEL` (Standard `medium`; kleinere Modelle erkennen zu schlecht).
+- **Genau das Modell, das du gewählt hast.** `device=cuda` lädt das eingestellte GPU-Modell oder antwortet mit `503`, wenn keine
+  Karte den dafür nötigen freien VRAM hat (`vram_mib.json`); es wird nichts still ersetzt.
+- **`device=auto` für einen Rückfall, den du verlangst:** erst das eingestellte GPU-Modell, dann die kleineren darunter
+  (Whisper: die nächsten Größen abwärts; Parakeet: int8 für fp32), dann das eingestellte CPU-Modell. Was passt, ergibt sich aus
+  der Tabelle des VRAM-Bedarfs und einer `nvidia-smi`-Abfrage, ohne etwas probeweise zu laden. Die Antwort nennt, womit
+  transkribiert wurde, und listet in `fallback`, was nicht konnte und warum.
 - **Optionale Sprechererkennung** mit pyannote, auf einer zweiten GPU, pro Anfrage.
 - Eine Webseite unter `/` (leitet auf `/ui/`; Deutsch und Englisch, hell und dunkel, wie bei der TTS-Suite): der Zustand der
   Modelle auf CPU und GPU mit einem Knopf zum Freigeben, die Laufzeit-Konfiguration und eine Probe, die eine Datei oder eine
@@ -71,16 +74,18 @@ Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `whisper
 | Feld | Bedeutung |
 |---|---|
 | `file` | Audiodatei (WAV, MP3, M4A, OGG, FLAC, WebM) |
-| `device` | `cpu` (Standard) oder `cuda` |
+| `device` | `cpu` (Standard), `cuda` oder `auto` (die Rückfall-Liste oben) |
 | `language` | Sprachcode wie `de` oder `en`; Standard aus der Konfiguration |
 | `diarize` | `1`, um Sprecher zu kennzeichnen (Standard: aus) |
 | `num_speakers` | Optionaler Hinweis, wenn die Sprecherzahl bekannt ist |
-| `engine` | `whisper` oder `parakeet`; Standard `STT_ENGINE` |
-| `quality` | nur Parakeet: `fp32` oder `int8`; Standard `STT_CPU_QUALITY` bzw. `STT_GPU_QUALITY`, je nach Gerät |
+| `engine` | `whisper` oder `parakeet`; Standard die für das Gerät eingestellte Engine (`cpu_engine`, `gpu_engine`) |
+| `model` | nur Whisper: eine Größe wie `medium`; Standard `cpu_model` bzw. `gpu_model`, je nach Gerät |
+| `quality` | nur Parakeet: `fp32` oder `int8`; Standard `cpu_quality` bzw. `gpu_quality`, je nach Gerät |
 
-Die Antwort ist JSON mit `text`, der benötigten Zeit und dem verwendeten Gerät. Fehler: `400`
-bei fehlender Datei oder ungültigem Gerät, `503`, wenn keine GPU Platz für ein Modell hat,
-sonst `500`.
+Die Antwort ist JSON mit `text`, der benötigten Zeit, dem verwendeten Gerät und der Engine mit ihrem Modell (`model` bei
+Whisper, `quality` bei Parakeet); nach einem Rückfall auch `fallback`, die Liste dessen, was die Anfrage nicht übernehmen
+konnte, je mit `tried` und `reason`. Fehler: `400` bei fehlender Datei oder ungültigem Wert, `503`, wenn die GPU für das Modell
+keinen Platz hat (oder mit einem anderen beschäftigt ist), sonst `500`.
 
 ```
 curl -F file=@sprache.webm -F device=cuda http://localhost:5080/transcribe
@@ -94,18 +99,17 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 |---|---|---|
 | `WHISPER_MODEL` | `medium` | Modell auf der CPU (und GPU-Standard, wenn `WHISPER_GPU_MODEL` fehlt) |
 | `WHISPER_CPU_MODEL` | `WHISPER_MODEL` | Modell auf der CPU |
-| `WHISPER_GPU_MODEL` | `large-v3` | Erste Wahl auf der GPU |
-| `WHISPER_GPU_MIN_MODEL` | `medium` | Kleinstes Modell, auf das die GPU absteigt |
+| `WHISPER_GPU_MODEL` | `large-v3` | Whisper-Größe auf der GPU |
 | `WHISPER_GPU_TTL_MINUTES` | `30` | Leerlauf-Minuten, bis der GPU-Worker endet und sein VRAM frei wird; `0` behält ihn |
 | `WHISPER_LANGUAGE` | `de` | Standardsprache (`auto` erkennt sie) |
 | `WHISPER_EAGER_LOAD` | `1` | CPU-Modell beim Start laden |
 | `STT_CONFIG_FILE` | `/state/config.json` | Ablage der über `/config` geänderten Einstellungen (Volume `whisper_state`). Die Umgebung liefert nur die ersten Standardwerte; sobald die Datei existiert, gilt sie. Zum Zurücksetzen löschen |
 | `WHISPER_CPU_COMPUTE` / `WHISPER_GPU_COMPUTE` | `int8` / `float16` | Rechengenauigkeit |
 | `DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | Pipeline der Sprechererkennung |
-| `STT_ENGINE` | `whisper` | Engine, wenn eine Anfrage keine nennt: `whisper` oder `parakeet` |
-| `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet-Qualität auf CPU / GPU, wenn eine Anfrage keine nennt: `fp32` oder `int8` |
+| `STT_CPU_ENGINE` / `STT_GPU_ENGINE` | `whisper` / `whisper` | Engine auf CPU / GPU, wenn eine Anfrage keine nennt: `whisper` oder `parakeet` |
+| `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet-Genauigkeit auf CPU / GPU, wenn eine Anfrage keine nennt: `fp32` oder `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet schneidet das Audio an Sprechpausen in Stücke von höchstens dieser Länge und fasst kürzere Pausen zusammen |
-| `PARAKEET_MIN_VRAM_MIB` | `4500` | Freier VRAM, den eine Karte für Parakeet braucht |
+| `STT_VRAM_FILE` | `vram_mib.json` | Freier VRAM (MiB), den eine Karte braucht, bevor ein Modell darauf geladen wird, je Whisper-Größe und Parakeet-Genauigkeit; Schätzwerte, bis `scripts/burn_in.py` sie gemessen hat |
 
 Verfügbare Modelle: `tiny`, `base`, `small`, `medium`, `large-v3`.
 
