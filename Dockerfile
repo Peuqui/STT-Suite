@@ -59,6 +59,7 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/u
 
 # Copy server
 COPY server.py /app/server.py
+COPY ui /app/ui
 WORKDIR /app
 
 EXPOSE 5052

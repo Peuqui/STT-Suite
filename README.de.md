@@ -24,7 +24,10 @@ behält seinen Namen `whisper-stt`, damit ein laufender nicht neu angelegt wird.
   `large-v3`) und steigt bei knappem VRAM auf kleinere ab, aber nie unter
   `WHISPER_GPU_MIN_MODEL` (Standard `medium`; kleinere Modelle erkennen zu schlecht).
 - **Optionale Sprechererkennung** mit pyannote, auf einer zweiten GPU, pro Anfrage.
-- Eine kleine Webseite unter `/` zeigt den Status und ändert die Laufzeit-Konfiguration.
+- Eine Webseite unter `/` (leitet auf `/ui/`; Deutsch und Englisch, hell und dunkel, wie bei der TTS-Suite): der Zustand der
+  Modelle auf CPU und GPU mit einem Knopf zum Freigeben, die Laufzeit-Konfiguration und eine Probe, die eine Datei oder eine
+  Aufnahme vom Mikrofon auf dem gewählten Gerät transkribiert. Sie besteht aus HTML, CSS und JavaScript in `ui/` und nutzt
+  dieselben HTTP-Aufrufe wie jeder andere Client.
 
 ## Voraussetzungen
 
@@ -61,7 +64,7 @@ Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `whisper
 | GET | `/status` | Ausführlicher Status und die vollständige Laufzeit-Konfiguration |
 | GET/POST | `/config` | Laufzeit-Konfiguration lesen oder ändern (JSON) |
 | POST | `/unload?device=cpu\|gpu\|cuda\|all` | Modelle entladen; `409`, solange eine GPU-Transkription läuft, `force=1` beendet sie trotzdem |
-| GET | `/` | Webseite mit Status und Konfiguration |
+| GET | `/`, `/ui/` | Webseite: Zustand, Konfiguration, Probe |
 
 `POST /transcribe` erwartet ein Multipart-Formular:
 

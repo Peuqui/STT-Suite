@@ -30,7 +30,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, redirect, request, send_from_directory
 
 app = Flask(__name__)
 
@@ -1082,185 +1082,30 @@ def _log_client(action: str, **details: str) -> None:
           f"agent={request.user_agent.string!r}", flush=True)
 
 
+# The web page (plain HTML, CSS and JavaScript in ui/, no build step). It holds no data of its own: it
+# asks /status, /config, /unload and /transcribe, like any other client.
+UI_DIR = Path(__file__).parent / "ui"
+UI_PREFIX = "/ui"
+# It may only load its own files and talk to this service; no-cache so that a fixed page arrives at once
+# (the ETag decides, an unchanged file costs one short answer).
+UI_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "no-cache",
+}
+
+
 @app.route("/", methods=["GET"])
 def index():
-    """Web-UI for status, model management, and settings."""
-    gpu_alive = _gpu_process is not None and _gpu_process.is_alive()
-    # What is really in memory — "parakeet-fp32", "medium", or nothing (idle).
-    cpu_loaded_name = (f"parakeet-{_parakeet_cpu_quality}" if _parakeet_cpu is not None
-                       else _cpu_model_name if _model_cpu is not None else "")
-    gpu_loaded_name = _gpu_model_name if gpu_alive else ""
+    return redirect(f"{UI_PREFIX}/")
 
-    def badge(loaded_name: str) -> str:
-        return (f'<span style="color:#4CAF50">{loaded_name}</span>' if loaded_name
-                else '<span style="color:#999">idle</span>')
 
-    cpu_badge = badge(cpu_loaded_name)
-    gpu_badge = badge(gpu_loaded_name)
-
-    cpu_model_options = "".join(
-        f'<option value="{m}"{" selected" if m == _config["cpu_model"] else ""}>{m}</option>'
-        for m in AVAILABLE_MODELS
-    )
-    gpu_model_options = "".join(
-        f'<option value="{m}"{" selected" if m == _config["gpu_model"] else ""}>{m}</option>'
-        for m in AVAILABLE_MODELS
-    )
-
-    engine_options = "".join(
-        f'<option value="{e}"{" selected" if e == _config["engine"] else ""}>{e}</option>'
-        for e in ENGINES
-    )
-    cpu_quality_options = "".join(
-        f'<option value="{q}"{" selected" if q == _config["cpu_quality"] else ""}>{q}</option>'
-        for q in PARAKEET_QUALITIES
-    )
-    gpu_quality_options = "".join(
-        f'<option value="{q}"{" selected" if q == _config["gpu_quality"] else ""}>{q}</option>'
-        for q in PARAKEET_QUALITIES
-    )
-
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Whisper STT</title>
-<style>
-body {{ font-family: sans-serif; background: #1a1a1a; color: #fff; max-width: 640px; margin: 40px auto; padding: 20px; }}
-h1 {{ font-size: 20px; margin-bottom: 4px; }}
-h2 {{ font-size: 14px; color: #FFD700; margin: 16px 0 8px 0; }}
-.card {{ background: #252525; border-radius: 8px; padding: 16px; margin: 8px 0; }}
-.row {{ display: flex; justify-content: space-between; align-items: center; margin: 6px 0; }}
-label {{ color: #aaa; font-size: 13px; }}
-select, input[type=number] {{ background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; font-size: 13px; }}
-select {{ width: 140px; }}
-input[type=number] {{ width: 70px; text-align: right; }}
-.toggle {{ position: relative; width: 40px; height: 22px; }}
-.toggle input {{ opacity: 0; width: 0; height: 0; }}
-.toggle .slider {{ position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #555; border-radius: 11px; transition: 0.2s; }}
-.toggle .slider:before {{ content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.2s; }}
-.toggle input:checked + .slider {{ background: #4CAF50; }}
-.toggle input:checked + .slider:before {{ transform: translateX(18px); }}
-.btn {{ padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px; margin: 2px; }}
-.btn:hover {{ opacity: 0.85; }}
-.btn-load {{ background: #66bb6a; color: #fff; }}
-.btn-unload {{ background: #ff6f00; color: #fff; }}
-.btn-save {{ background: #42a5f5; color: #fff; }}
-.btn-row {{ display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; margin-top: 8px; }}
-#msg {{ margin-top: 12px; padding: 8px 12px; border-radius: 6px; display: none; font-size: 13px; }}
-</style></head><body>
-<h1>Whisper STT</h1>
-<p style="color:#888; font-size:12px; margin-top:0;">faster-whisper Docker Service</p>
-
-<div class="card">
-  <div class="row"><label>CPU:</label> {cpu_badge}</div>
-  <div class="row"><label>GPU:</label> {gpu_badge}{f' (GPU {_gpu_device_index})' if gpu_alive and _gpu_device_index is not None else ''}</div>
-  <div class="btn-row">
-    <button class="btn btn-load" onclick="load('cpu')">Load CPU</button>
-    <button class="btn btn-unload" onclick="unload('cpu')">Unload CPU</button>
-    <button class="btn btn-load" onclick="load('cuda')">Load GPU</button>
-    <button class="btn btn-unload" onclick="unload('cuda')">Unload GPU</button>
-  </div>
-</div>
-
-<h2>Models</h2>
-<div class="card">
-  <div class="row"><label>Engine</label> <select id="cfg-engine" onchange="applyEngine()">{engine_options}</select></div>
-  <p style="color:#666; font-size:11px; margin:8px 0 0 0;">Only the settings of the chosen engine are shown: Whisper has models and decoding options, Parakeet one model with a quality per device.</p>
-</div>
-<div style="display:flex; gap:12px;">
-  <div class="card" style="flex:1;">
-    <div style="font-size:13px; font-weight:600; color:#4CAF50; margin-bottom:8px;">CPU Engine</div>
-    <div class="row whisper-only"><label>Whisper model</label> <select id="cfg-cpu-model">{cpu_model_options}</select></div>
-    <div class="row parakeet-only"><label>Parakeet quality</label> <select id="cfg-cpu-quality">{cpu_quality_options}</select></div>
-  </div>
-  <div class="card" style="flex:1;">
-    <div style="font-size:13px; font-weight:600; color:#FF9800; margin-bottom:8px;">GPU Engine</div>
-    <div class="row whisper-only"><label>Whisper model</label> <select id="cfg-gpu-model">{gpu_model_options}</select></div>
-    <div class="row parakeet-only"><label>Parakeet quality</label> <select id="cfg-gpu-quality">{gpu_quality_options}</select></div>
-    <div class="row"><label>TTL (min)</label> <input type="number" id="cfg-ttl" value="{_config["gpu_ttl_minutes"]}" min="0" max="1440"></div>
-  </div>
-</div>
-
-<h2>Transcription</h2>
-<div class="card">
-  <div class="row whisper-only"><label>Beam Size</label> <input type="number" id="cfg-beam" value="{_config["beam_size"]}" min="1" max="20"></div>
-  <div class="row"><label>Default Language</label>
-    <select id="cfg-lang">
-      <option value="de"{"" if _config["language"] != "de" else " selected"}>Deutsch</option>
-      <option value="en"{"" if _config["language"] != "en" else " selected"}>English</option>
-      <option value="auto"{"" if _config["language"] != "auto" else " selected"}>Auto-Detect</option>
-    </select>
-  </div>
-  <div class="row whisper-only"><label>VAD Filter</label>
-    <label class="toggle"><input type="checkbox" id="cfg-vad" {"checked" if _config["vad_filter"] else ""}><span class="slider"></span></label>
-  </div>
-  <div class="row whisper-only"><label>Condition on Previous</label>
-    <label class="toggle"><input type="checkbox" id="cfg-cond" {"checked" if _config["condition_on_previous_text"] else ""}><span class="slider"></span></label>
-  </div>
-  <div class="row whisper-only"><label>Initial Prompt (auto/leer/Text)</label> <input type="text" id="cfg-prompt" value="{_config["initial_prompt"]}" style="width:220px"></div>
-  <div class="row"><label>Sprecheranzahl (0 = auto)</label> <input type="number" id="cfg-numspk" value="{_config["num_speakers"]}" min="0" max="10"></div>
-  <div class="btn-row">
-    <button class="btn btn-save" onclick="saveConfig()">Save Settings</button>
-  </div>
-  <p style="color:#666; font-size:11px; margin:8px 0 0 0;">A changed engine, CPU model or CPU quality loads right away; the GPU worker picks up a changed engine, model or quality on its next start (unload it to apply now).</p>
-</div>
-
-<div id="msg"></div>
-
-<script>
-function applyEngine() {{
-  const engine = document.getElementById('cfg-engine').value;
-  document.querySelectorAll('.whisper-only').forEach(el => {{ el.style.display = engine === 'whisper' ? '' : 'none'; }});
-  document.querySelectorAll('.parakeet-only').forEach(el => {{ el.style.display = engine === 'parakeet' ? '' : 'none'; }});
-}}
-applyEngine();
-async function load(device) {{
-  msg('Loading ' + device + '...', '#01579b');
-  const fd = new FormData();
-  const wav = new Uint8Array([0x52,0x49,0x46,0x46,0x24,0,0,0,0x57,0x41,0x56,0x45,0x66,0x6D,0x74,0x20,
-    0x10,0,0,0,1,0,1,0,0x80,0x3E,0,0,0,0x7D,0,0,2,0,0x10,0,0x64,0x61,0x74,0x61,0,0,0,0]);
-  fd.append('file', new Blob([wav], {{type:'audio/wav'}}), 'load.wav');
-  fd.append('device', device);
-  fd.append('language', 'de');
-  try {{
-    const r = await fetch('/transcribe', {{method:'POST', body:fd}});
-    if (r.ok) {{ msg(device.toUpperCase() + ' loaded', '#1b5e20'); setTimeout(()=>location.reload(), 800); }}
-    else {{ msg('Error: ' + (await r.json()).error, '#b71c1c'); }}
-  }} catch(e) {{ msg('Connection error', '#b71c1c'); }}
-}}
-async function unload(device) {{
-  try {{
-    const r = await fetch('/unload?device=' + device, {{method:'POST'}});
-    if (r.ok) {{ msg(device.toUpperCase() + ' unloaded', '#1b5e20'); setTimeout(()=>location.reload(), 500); }}
-    else {{ msg('Error', '#b71c1c'); }}
-  }} catch(e) {{ msg('Connection error', '#b71c1c'); }}
-}}
-async function saveConfig() {{
-  const cfg = {{
-    engine: document.getElementById('cfg-engine').value,
-    cpu_quality: document.getElementById('cfg-cpu-quality').value,
-    gpu_quality: document.getElementById('cfg-gpu-quality').value,
-    cpu_model: document.getElementById('cfg-cpu-model').value,
-    gpu_model: document.getElementById('cfg-gpu-model').value,
-    gpu_ttl_minutes: parseInt(document.getElementById('cfg-ttl').value) || 30,
-    beam_size: parseInt(document.getElementById('cfg-beam').value) || 5,
-    language: document.getElementById('cfg-lang').value,
-    vad_filter: document.getElementById('cfg-vad').checked,
-    condition_on_previous_text: document.getElementById('cfg-cond').checked,
-    initial_prompt: document.getElementById('cfg-prompt').value,
-    num_speakers: parseInt(document.getElementById('cfg-numspk').value) || 0,
-  }};
-  try {{
-    const r = await fetch('/config', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(cfg)}});
-    if (r.ok) {{ msg('Settings saved', '#1b5e20'); setTimeout(()=>location.reload(), 500); }}
-    else {{ msg('Error saving', '#b71c1c'); }}
-  }} catch(e) {{ msg('Connection error', '#b71c1c'); }}
-}}
-function msg(text, bg) {{
-  const el = document.getElementById('msg');
-  el.textContent = text; el.style.display = 'block'; el.style.background = bg;
-  setTimeout(() => {{ el.style.display = 'none'; }}, 4000);
-}}
-</script>
-</body></html>"""
+@app.route(f"{UI_PREFIX}/", defaults={"filename": "index.html"})
+@app.route(f"{UI_PREFIX}/<path:filename>")
+def ui(filename: str):
+    response = send_from_directory(UI_DIR, filename)
+    response.headers.update(UI_HEADERS)
+    return response
 
 
 # ── API Endpoints ────────────────────────────────────────────
