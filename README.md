@@ -24,7 +24,10 @@ its name `whisper-stt`, so a running one is not recreated.)
   steps down to smaller ones when VRAM is short, but never below `WHISPER_GPU_MIN_MODEL`
   (default `medium`; smaller models transcribe too poorly to be worth it).
 - **Optional speaker diarization** with pyannote, on a second GPU, per request.
-- A small web page at `/` shows the status and changes the runtime configuration.
+- A web page at `/` (it goes to `/ui/`; German and English, light and dark, like the TTS-Suite's): the status of the
+  models on the CPU and the GPU with a button to release each, the runtime configuration, and a test that
+  transcribes a file or a recording from the microphone on the chosen device. It is plain HTML, CSS and JavaScript in
+  `ui/` and uses the same HTTP calls as any other client.
 
 ## Requirements
 
@@ -61,7 +64,7 @@ and survive rebuilds. The container restarts with Docker (`restart: unless-stopp
 | GET | `/status` | Detailed status and the full runtime configuration |
 | GET/POST | `/config` | Read or change the runtime configuration (JSON) |
 | POST | `/unload?device=cpu\|gpu\|cuda\|all` | Unload models; `409` while a GPU transcription runs, `force=1` kills it anyway |
-| GET | `/` | Web page with status and configuration |
+| GET | `/`, `/ui/` | Web page: status, configuration, test |
 
 `POST /transcribe` takes a multipart form:
 
