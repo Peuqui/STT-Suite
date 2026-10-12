@@ -1097,7 +1097,8 @@ UI_HEADERS = {
 
 @app.route("/", methods=["GET"])
 def index():
-    return redirect(f"{UI_PREFIX}/")
+    # Relative, so that it also works behind a reverse proxy that serves the service under a prefix (/whisper/).
+    return redirect("ui/")
 
 
 @app.route(f"{UI_PREFIX}/", defaults={"filename": "index.html"})
