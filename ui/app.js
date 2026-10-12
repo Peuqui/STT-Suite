@@ -4,6 +4,7 @@ import { h } from './dom.js'
 import { currentLanguage, onLanguageChange, t, toggleLanguage } from './i18n.js'
 import { statusView } from './status.js'
 import { testView } from './test.js'
+import { vramView } from './vram.js'
 
 // The page: three views behind tabs, the language and the colours. Light or dark follows the system until one is chosen.
 const message = document.getElementById('message')
@@ -24,9 +25,10 @@ const fail = (error) => say(error instanceof ApiError || error instanceof Error 
 const views = {
   status: statusView({ show, fail }),
   config: configView({ show, fail }),
+  vram: vramView({ show, fail }),
   test: testView({ show, fail }),
 }
-const TAB_KEYS = { status: 'tabStatus', config: 'tabConfig', test: 'tabTest' }
+const TAB_KEYS = { status: 'tabStatus', config: 'tabConfig', vram: 'tabVram', test: 'tabTest' }
 let current = 'status'
 
 for (const [name, view] of Object.entries(views)) document.getElementById(`view-${name}`).append(view.root)

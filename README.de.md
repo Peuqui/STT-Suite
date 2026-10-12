@@ -22,10 +22,18 @@ behält seinen Namen `whisper-stt`, damit ein laufender nicht neu angelegt wird.
   VRAM geladen und nach einer einstellbaren Leerlaufzeit wieder freigegeben.
 - **Genau das Modell, das du gewählt hast.** `device=cuda` lädt das eingestellte GPU-Modell oder antwortet mit `503`, wenn keine
   Karte den dafür nötigen freien VRAM hat (`vram_mib.json`); es wird nichts still ersetzt.
-- **`device=auto` für einen Rückfall, den du verlangst:** erst das eingestellte GPU-Modell, dann die kleineren darunter
-  (Whisper: die nächsten Größen abwärts; Parakeet: int8 für fp32), dann das eingestellte CPU-Modell. Was passt, ergibt sich aus
-  der Tabelle des VRAM-Bedarfs und einer `nvidia-smi`-Abfrage, ohne etwas probeweise zu laden. Die Antwort nennt, womit
-  transkribiert wurde, und listet in `fallback`, was nicht konnte und warum.
+- **`device=auto` für einen Rückfall, den du verlangst:** geht eine Liste durch, die du einstellst (`auto_chain` in der
+  Konfiguration, auf der Webseite unter Konfiguration: Einträge aus Gerät, Engine und Modell, die sich verschieben,
+  ausschalten, ändern und hinzufügen lassen; zuerst das eingestellte GPU-Modell, dann das eingestellte CPU-Modell). Der erste
+  Eintrag, der kann, nimmt die Anfrage. Was kann, ergibt sich aus der Tabelle des VRAM-Bedarfs und einer
+  `nvidia-smi`-Abfrage, ohne etwas probeweise zu laden, und bevor ein geladenes Modell losgelassen wird: Ein Modell, das sich nicht
+  laden lässt, kostet nie das, das geladen ist. Die Antwort nennt, womit transkribiert wurde, und listet in `fallback`, was nicht
+  konnte und warum.
+- **Eine Tabelle des VRAM-Bedarfs, die du misst.** Die mitgelieferten Werte sind Schätzungen. Die Webseite (Reiter Grafikspeicher)
+  macht ein Burn-in: Sie lädt jedes gewählte Modell nacheinander auf eine GPU, transkribiert eine Aufnahme und nimmt den höchsten
+  Anstieg des belegten Speichers; das Ergebnis ersetzt die Schätzung und liegt im Zustands-Volume. Ein Puffer
+  (`vram_margin_mib`, Standard 256 MiB) kommt zu jedem Bedarf dazu und bleibt auf der Karte frei; kleiner machen, wenn ein
+  Modell knapp nicht mehr passt, oder die Liste zum nächstkleineren weitergehen lassen.
 - **Optionale Sprechererkennung** mit pyannote, auf einer zweiten GPU, pro Anfrage.
 - Eine Webseite unter `/` (leitet auf `/ui/`; Deutsch und Englisch, hell und dunkel, wie bei der TTS-Suite): der Zustand der
   Modelle auf CPU und GPU mit einem Knopf zum Freigeben, die Laufzeit-Konfiguration und eine Probe, die eine Datei oder eine
@@ -67,6 +75,7 @@ Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `whisper
 | GET | `/status` | Ausführlicher Status und die vollständige Laufzeit-Konfiguration |
 | GET/POST | `/config` | Laufzeit-Konfiguration lesen oder ändern (JSON) |
 | POST | `/unload?device=cpu\|gpu\|cuda\|all` | Modelle entladen; `409`, solange eine GPU-Transkription läuft, `force=1` beendet sie trotzdem |
+| POST, GET | `/burn-in` | `POST` (Formular: `file`, optional `entries`, eine JSON-Liste aus `{"engine", "model"}`) startet im Hintergrund die Messung des VRAM-Bedarfs der Modelle; `GET` zeigt den Stand (`running`, `step`, `results`, `error`). `409`, solange eine läuft oder die GPU transkribiert |
 | GET | `/`, `/ui/` | Webseite: Zustand, Konfiguration, Probe |
 
 `POST /transcribe` erwartet ein Multipart-Formular:
@@ -109,7 +118,9 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `STT_CPU_ENGINE` / `STT_GPU_ENGINE` | `whisper` / `whisper` | Engine auf CPU / GPU, wenn eine Anfrage keine nennt: `whisper` oder `parakeet` |
 | `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet-Genauigkeit auf CPU / GPU, wenn eine Anfrage keine nennt: `fp32` oder `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet schneidet das Audio an Sprechpausen in Stücke von höchstens dieser Länge und fasst kürzere Pausen zusammen |
-| `STT_VRAM_FILE` | `vram_mib.json` | Freier VRAM (MiB), den eine Karte braucht, bevor ein Modell darauf geladen wird, je Whisper-Größe und Parakeet-Genauigkeit; Schätzwerte, bis `scripts/burn_in.py` sie gemessen hat |
+| `STT_VRAM_FILE` | `vram_mib.json` | Freier VRAM (MiB), den eine Karte braucht, bevor ein Modell darauf geladen wird, je Whisper-Größe und Parakeet-Genauigkeit: Schätzwerte, ersetzt durch das, was ein Burn-in gemessen hat |
+| `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Wo die gemessenen Werte liegen (Volume `whisper_state`); löschen, um zu den Schätzwerten zurückzukehren |
+| `STT_VRAM_MARGIN_MIB` | `256` | Freier VRAM, der auf einer Karte über den Bedarf eines Modells hinaus bleibt; auch auf der Webseite einstellbar |
 
 Verfügbare Modelle: `tiny`, `base`, `small`, `medium`, `large-v3`.
 

@@ -1,5 +1,5 @@
 {
-  "_note": "Free VRAM (MiB) a card needs before a model is loaded on it; the GPU is only used when a card has this much free. Estimates unless noted; scripts/burn_in.py measures them.",
+  "_note": "Free VRAM (MiB) a card needs before a model is loaded on it; the GPU is only used when a card has this much free. Estimates unless noted;.",
   "whisper": {"tiny": 600, "base": 700, "small": 1300, "medium": 2000, "large-v3": 4200},
   "parakeet": {"fp32": 4500, "int8": 4500}
 }
