@@ -105,7 +105,7 @@ curl -F file=@speech.webm -F device=cuda http://localhost:5080/transcribe
 
 Engine, model and precision are now set per device: `STT_ENGINE` became `STT_CPU_ENGINE` and `STT_GPU_ENGINE`, and
 `WHISPER_GPU_MIN_MODEL` is gone (the GPU no longer steps down by itself; `device=auto` and its list do that when you
-ask). Rename the variable in your `.env`. Settings already saved in the state volume (`/state/config.json`) hold the old
+ask). Rename the variable in your `.env`. The settings of the whole service lost their `WHISPER_` prefix too: `WHISPER_GPU_TTL_MINUTES`, `WHISPER_LANGUAGE`, `WHISPER_EAGER_LOAD`, `WHISPER_GPU_RESULT_TIMEOUT_S` and `WHISPER_NUM_SPEAKERS` are now `STT_GPU_TTL_MINUTES`, `STT_LANGUAGE`, `STT_EAGER_LOAD`, `STT_GPU_RESULT_TIMEOUT_S` and `STT_NUM_SPEAKERS` (those that only concern the Whisper engine, such as `WHISPER_MODEL`, keep their names). Settings already saved in the state volume (`/state/config.json`) hold the old
 key `engine`, which the service refuses at start: replace it by `cpu_engine` and `gpu_engine` with the same value, or
 delete the file to return to the `.env`. The container, the image and the volumes were renamed as well: `whisper-stt` became `stt-suite`, `whisper_models` became
 `stt_suite_models` and `whisper_state` became `stt_suite_state`. Remove the old container (`docker rm -f whisper-stt`), start the
@@ -122,9 +122,9 @@ Set in `docker-compose.yml` or as environment variables when starting compose:
 | `WHISPER_MODEL` | `medium` | Model on the CPU (and the GPU default when `WHISPER_GPU_MODEL` is unset) |
 | `WHISPER_CPU_MODEL` | `WHISPER_MODEL` | Model on the CPU |
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper size on the GPU |
-| `WHISPER_GPU_TTL_MINUTES` | `30` | Idle minutes until the GPU worker is stopped and its VRAM freed; `0` keeps it |
-| `WHISPER_LANGUAGE` | `de` | Default language (`auto` detects it) |
-| `WHISPER_EAGER_LOAD` | `1` | Load the CPU model at start |
+| `STT_GPU_TTL_MINUTES` | `30` | Idle minutes until the GPU worker is stopped and its VRAM freed; `0` keeps it |
+| `STT_LANGUAGE` | `de` | Default language (`auto` detects it) |
+| `STT_EAGER_LOAD` | `1` | Load the CPU model at start |
 | `STT_CONFIG_FILE` | `/state/config.json` | Where settings changed via `/config` are kept (volume `stt_suite_state`). The environment only gives the first defaults; once this file exists it wins. Delete it to return to the environment |
 | `WHISPER_CPU_COMPUTE` / `WHISPER_GPU_COMPUTE` | `int8` / `float16` | Compute types |
 | `DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | Diarization pipeline |

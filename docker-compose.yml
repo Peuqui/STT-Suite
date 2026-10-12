@@ -36,9 +36,9 @@ services:
       # GPU auto-kill: minutes of GPU inactivity before killing GPU worker process
       # (fully releases CUDA context + VRAM, enables GPU P8 power state)
       # CPU model stays loaded permanently. Set to 0 to disable GPU TTL.
-      - WHISPER_GPU_TTL_MINUTES=${WHISPER_GPU_TTL_MINUTES:-30}
+      - STT_GPU_TTL_MINUTES=${STT_GPU_TTL_MINUTES:-30}
       # Eager load CPU model at startup (1=yes, 0=lazy)
-      - WHISPER_EAGER_LOAD=${WHISPER_EAGER_LOAD:-1}
+      - STT_EAGER_LOAD=${STT_EAGER_LOAD:-1}
       # ── Speaker diarization (optional, per-request via diarize=1) ──
       # Model + VRAM floor for the pyannote worker; it picks its own GPU and
       # avoids the one Whisper occupies.

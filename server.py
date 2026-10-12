@@ -1,5 +1,5 @@
 """
-Whisper STT Docker Service — faster-whisper based transcription API.
+STT-Suite — speech to text as an HTTP service, with the engines faster-whisper (Whisper) and Parakeet.
 
 Supports dual-device operation:
 - CPU: runs in main process (permanent, no VRAM)
@@ -49,8 +49,8 @@ _config = {
     "gpu_model": os.environ.get("WHISPER_GPU_MODEL", _default_model),
     "cpu_compute": os.environ.get("WHISPER_CPU_COMPUTE", "int8"),
     "gpu_compute": os.environ.get("WHISPER_GPU_COMPUTE", "float16"),
-    "gpu_ttl_minutes": int(os.environ.get("WHISPER_GPU_TTL_MINUTES", "30")),
-    "language": os.environ.get("WHISPER_LANGUAGE", "de"),
+    "gpu_ttl_minutes": int(os.environ.get("STT_GPU_TTL_MINUTES", "30")),
+    "language": os.environ.get("STT_LANGUAGE", "de"),
     "vad_filter": os.environ.get("WHISPER_VAD_FILTER", "1") in ("1", "true"),
     "beam_size": int(os.environ.get("WHISPER_BEAM_SIZE", "5")),
     # Carries the transcript so far into the next 30 s window. Without it the
@@ -66,7 +66,7 @@ _config = {
     # Default speaker-count hint for diarization; 0 = let pyannote estimate.
     # Per-request num_speakers still wins. Set to 2 before transcribing an
     # interview and the greeting ping-pong stops collapsing into one speaker.
-    "num_speakers": int(os.environ.get("WHISPER_NUM_SPEAKERS", "0")),
+    "num_speakers": int(os.environ.get("STT_NUM_SPEAKERS", "0")),
     # Each device has its own engine, and with it its own model: a Whisper size
     # (cpu_model / gpu_model) or a Parakeet precision (cpu_quality / gpu_quality).
     # Any mix works, e.g. Parakeet int8 on the CPU and Whisper large-v3 on the GPU.
@@ -97,7 +97,7 @@ def _load_saved_config() -> None:
     if unknown:
         raise SystemExit(f"{_CONFIG_FILE}: unknown settings {sorted(unknown)} — delete the file or fix it")
     _config.update(saved)
-    print(f"[Whisper] Settings restored from {_CONFIG_FILE}", flush=True)
+    print(f"[STT] Settings restored from {_CONFIG_FILE}", flush=True)
 
 
 def _save_config() -> None:
@@ -149,7 +149,7 @@ def _resolve_initial_prompt(language: str) -> str | None:
     if configured != "auto":
         return configured
     return _INITIAL_PROMPTS.get(language)
-EAGER_LOAD = os.environ.get("WHISPER_EAGER_LOAD", "1") in ("1", "true", "True")
+EAGER_LOAD = os.environ.get("STT_EAGER_LOAD", "1") in ("1", "true", "True")
 
 # Free VRAM (MiB) a card needs for each model before it is loaded there: the shipped estimates
 # (vram_mib.json), overridden by what a burn-in measured on this machine (kept next to the settings,
@@ -198,7 +198,7 @@ _HF_TOKEN = os.environ.get("HF_TOKEN", "")
 # Max wait for one GPU transcription result. Long meeting recordings need
 # minutes even on GPU (medium ≈ 10-20x realtime → 2 h audio ≈ 6-12 min);
 # matches the AIfred-side WHISPER_TRANSCRIBE_TIMEOUT_S.
-_GPU_RESULT_TIMEOUT_S = int(os.environ.get("WHISPER_GPU_RESULT_TIMEOUT_S", "1800"))
+_GPU_RESULT_TIMEOUT_S = int(os.environ.get("STT_GPU_RESULT_TIMEOUT_S", "1800"))
 
 
 # ── CPU Model (main process, permanent) ──────────────────────
@@ -217,10 +217,10 @@ def _load_cpu_model(model_name: str):
 
     compute = _config["cpu_compute"]
     t0 = time.time()
-    print(f"[Whisper] Loading model '{model_name}' on cpu ({compute})...", flush=True)
+    print(f"[STT] Loading model '{model_name}' on cpu ({compute})...", flush=True)
     _model_cpu = WhisperModel(model_name, device="cpu", compute_type=compute)
     _cpu_model_name = model_name
-    print(f"[Whisper] Model loaded on cpu in {time.time() - t0:.1f}s", flush=True)
+    print(f"[STT] Model loaded on cpu in {time.time() - t0:.1f}s", flush=True)
 
 
 def _ensure_cpu_model(model_name: str):
@@ -261,7 +261,7 @@ def _transcribe_cpu(audio_path: str, language: str, return_segments: bool,
             seg_list.append((s.start, s.end, s.text))
     text = " ".join(text_parts).strip()
     elapsed = time.time() - t0
-    print(f"[Whisper] Transcribed (cpu, {elapsed:.2f}s): {text[:80]}...", flush=True)
+    print(f"[STT] Transcribed (cpu, {elapsed:.2f}s): {text[:80]}...", flush=True)
     payload = {
         "text": text, "time": round(elapsed, 3), "device": "cpu",
         "language": info.language,
@@ -471,7 +471,7 @@ def _detect_gpu_compute(gpu_idx: int) -> str:
                 cc = float(parts[1])
                 if cc >= 7.0:
                     return _config["gpu_compute"]
-                print(f"[Whisper] GPU {gpu_idx} CC {cc} < 7.0 → using int8", flush=True)
+                print(f"[STT] GPU {gpu_idx} CC {cc} < 7.0 → using int8", flush=True)
                 return "int8"
     except Exception:
         pass
@@ -485,7 +485,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
     # Pin by UUID (SSOT, same as llama-swap profiles) — immune to CUDA's
     # enumeration order, which differs from nvidia-smi on mixed-GPU hosts.
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_uuid
-    print(f"[Whisper/GPU] Worker started on GPU {gpu_idx} ({gpu_uuid}, PID {os.getpid()})", flush=True)
+    print(f"[STT/GPU] Worker started on GPU {gpu_idx} ({gpu_uuid}, PID {os.getpid()})", flush=True)
 
     t0 = time.time()
     try:
@@ -493,13 +493,13 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
             model = _load_parakeet(quality, "CUDAExecutionProvider")
         else:
             from faster_whisper import WhisperModel
-            print(f"[Whisper/GPU] Loading model '{model_name}' ({compute})...", flush=True)
+            print(f"[STT/GPU] Loading model '{model_name}' ({compute})...", flush=True)
             model = WhisperModel(model_name, device="cuda", compute_type=compute, device_index=0)
     except Exception as e:
-        print(f"[Whisper/GPU] Loading {engine} failed: {e}", flush=True)
+        print(f"[STT/GPU] Loading {engine} failed: {e}", flush=True)
         res_queue.put({"status": "failed", "error": str(e)})
         return
-    print(f"[Whisper/GPU] {engine} loaded in {time.time() - t0:.1f}s", flush=True)
+    print(f"[STT/GPU] {engine} loaded in {time.time() - t0:.1f}s", flush=True)
 
     # Signal parent that we're ready
     res_queue.put({"status": "ready"})
@@ -555,7 +555,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
                     seg_list.append((s.start, s.end, s.text))
             text = " ".join(text_parts).strip()
             elapsed = time.time() - t0
-            print(f"[Whisper/GPU] Transcribed ({elapsed:.2f}s): {text[:80]}...", flush=True)
+            print(f"[STT/GPU] Transcribed ({elapsed:.2f}s): {text[:80]}...", flush=True)
             payload = {
                 "text": text, "time": round(elapsed, 3), "device": "cuda",
                 "language": info.language,
@@ -567,7 +567,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
         except Exception as e:
             res_queue.put({"error": str(e)})
 
-    print(f"[Whisper/GPU] Worker exiting (PID {os.getpid()})", flush=True)
+    print(f"[STT/GPU] Worker exiting (PID {os.getpid()})", flush=True)
 
 
 def _free_per_card_mib() -> dict[int, int]:
@@ -645,12 +645,12 @@ def _spawn_gpu_worker(selected: tuple[int, str], model_name: str, compute: str,
         msg = _gpu_result_queue.get(timeout=600 if engine == "parakeet" else 120)
         if msg.get("status") == "ready":
             _gpu_footprint_mib = max(0, _used_per_card_mib().get(gpu_idx, 0) - used_before)
-            print(f"[Whisper] GPU worker ({engine}) ready on GPU {gpu_idx}, {_gpu_footprint_mib} MiB", flush=True)
+            print(f"[STT] GPU worker ({engine}) ready on GPU {gpu_idx}, {_gpu_footprint_mib} MiB", flush=True)
             return True
     except Exception:
         pass
 
-    print(f"[Whisper] GPU worker ({engine}) failed to start", flush=True)
+    print(f"[STT] GPU worker ({engine}) failed to start", flush=True)
     _kill_gpu_worker()
     return False
 
@@ -663,14 +663,14 @@ def _kill_gpu_worker():
     if _gpu_process is not None:
         gpu_idx = _gpu_device_index
         pid = _gpu_process.pid
-        print(f"[Whisper] Killing GPU worker (PID {pid}, GPU {gpu_idx})", flush=True)
+        print(f"[STT] Killing GPU worker (PID {pid}, GPU {gpu_idx})", flush=True)
         try:
             _gpu_process.kill()
             _gpu_process.join(timeout=5)
         except Exception:
             pass
         _gpu_process = None
-        print("[Whisper] GPU worker killed — VRAM fully released", flush=True)
+        print("[STT] GPU worker killed — VRAM fully released", flush=True)
 
     if _gpu_request_queue is not None:
         try:
@@ -816,14 +816,14 @@ def _decode_to_wav16k(src_path: str) -> str:
         )
         if proc.returncode == 0 and Path(wav_path).exists():
             size_mb = Path(wav_path).stat().st_size / 1024 / 1024
-            print(f"[Whisper] Decoded once to 16 kHz mono WAV "
+            print(f"[STT] Decoded once to 16 kHz mono WAV "
                   f"({size_mb:.0f} MB, {time.time() - t0:.1f}s) — shared by both engines",
                   flush=True)
             return wav_path
-        print(f"[Whisper] ffmpeg pre-decode FAILED (rc={proc.returncode}): "
+        print(f"[STT] ffmpeg pre-decode FAILED (rc={proc.returncode}): "
               f"{proc.stderr[:200]} — engines will decode separately", flush=True)
     except Exception as e:
-        print(f"[Whisper] ffmpeg pre-decode FAILED: {e} — engines will decode separately",
+        print(f"[STT] ffmpeg pre-decode FAILED: {e} — engines will decode separately",
               flush=True)
     return src_path
 
@@ -1225,7 +1225,7 @@ UI_HEADERS = {
 
 @app.route("/", methods=["GET"])
 def index():
-    # Relative, so that it also works behind a reverse proxy that serves the service under a prefix (/whisper/).
+    # Relative, so that it also works behind a reverse proxy that serves the service under a prefix (/stt-suite/).
     return redirect("ui/")
 
 
@@ -1352,7 +1352,7 @@ def _run_plan(plan: list[dict], work_path: str, language: str, segments: bool) -
         except GpuUnavailable as unavailable:
             skipped.append({"tried": _label(candidate), "reason": str(unavailable)})
             following = f" — next: {_label(plan[index + 1])}" if index + 1 < len(plan) else ""
-            print(f"[Whisper] {_label(candidate)} not possible ({unavailable}){following}", flush=True)
+            print(f"[STT] {_label(candidate)} not possible ({unavailable}){following}", flush=True)
     raise GpuUnavailable("; ".join(f"{entry['tried']}: {entry['reason']}" for entry in skipped))
 
 
@@ -1660,7 +1660,7 @@ def config_endpoint():
     if EAGER_LOAD and {"cpu_engine", "cpu_model", "cpu_quality"} & set(changed):
         threading.Thread(target=_preload_cpu, daemon=True, name="cpu-preload").start()
 
-    print(f"[Whisper] Config updated: {', '.join(changed)}", flush=True)
+    print(f"[STT] Config updated: {', '.join(changed)}", flush=True)
     return jsonify({"success": True, "changed": changed, "config": _config})
 
 
@@ -1694,6 +1694,6 @@ if EAGER_LOAD:
         _preload_cpu()
     threading.Thread(target=_eager_load, daemon=True).start()
 
-print(f'[Whisper] Server starting — cpu={_config["cpu_engine"]} {_config["cpu_model"]}/{_config["cpu_quality"]}, '
+print(f'[STT] Server starting — cpu={_config["cpu_engine"]} {_config["cpu_model"]}/{_config["cpu_quality"]}, '
       f'gpu={_config["gpu_engine"]} {_config["gpu_model"]}/{_config["gpu_quality"]}, '
       f'eager_load={EAGER_LOAD}, gpu_ttl={_config["gpu_ttl_minutes"]}min', flush=True)

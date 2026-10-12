@@ -105,7 +105,7 @@ curl -F file=@sprache.webm -F device=cuda http://localhost:5080/transcribe
 
 Engine, Modell und Genauigkeit werden jetzt je Gerät eingestellt: Aus `STT_ENGINE` wurden `STT_CPU_ENGINE` und
 `STT_GPU_ENGINE`, und `WHISPER_GPU_MIN_MODEL` entfällt (die GPU steigt nicht mehr von selbst ab; `device=auto` mit seiner Liste
-tut das, wenn du es verlangst). Benenne die Variable in deiner `.env` um. Im Zustands-Volume gespeicherte Einstellungen
+tut das, wenn du es verlangst). Benenne die Variable in deiner `.env` um. Auch die Einstellungen des ganzen Dienstes haben das Präfix `WHISPER_` verloren: `WHISPER_GPU_TTL_MINUTES`, `WHISPER_LANGUAGE`, `WHISPER_EAGER_LOAD`, `WHISPER_GPU_RESULT_TIMEOUT_S` und `WHISPER_NUM_SPEAKERS` heißen jetzt `STT_GPU_TTL_MINUTES`, `STT_LANGUAGE`, `STT_EAGER_LOAD`, `STT_GPU_RESULT_TIMEOUT_S` und `STT_NUM_SPEAKERS` (was nur die Whisper-Engine betrifft, wie `WHISPER_MODEL`, behält den Namen). Im Zustands-Volume gespeicherte Einstellungen
 (`/state/config.json`) tragen noch den alten Schlüssel `engine`, den der Dienst beim Start ablehnt: Ersetze ihn durch
 `cpu_engine` und `gpu_engine` mit demselben Wert, oder lösche die Datei, um zur `.env` zurückzukehren. Auch Container, Image und Volumes wurden umbenannt: `whisper-stt` wurde zu `stt-suite`, `whisper_models` zu `stt_suite_models` und
 `whisper_state` zu `stt_suite_state`. Entferne den alten Container (`docker rm -f whisper-stt`), starte den neuen einmal
@@ -122,9 +122,9 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `WHISPER_MODEL` | `medium` | Modell auf der CPU (und GPU-Standard, wenn `WHISPER_GPU_MODEL` fehlt) |
 | `WHISPER_CPU_MODEL` | `WHISPER_MODEL` | Modell auf der CPU |
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper-Größe auf der GPU |
-| `WHISPER_GPU_TTL_MINUTES` | `30` | Leerlauf-Minuten, bis der GPU-Worker endet und sein VRAM frei wird; `0` behält ihn |
-| `WHISPER_LANGUAGE` | `de` | Standardsprache (`auto` erkennt sie) |
-| `WHISPER_EAGER_LOAD` | `1` | CPU-Modell beim Start laden |
+| `STT_GPU_TTL_MINUTES` | `30` | Leerlauf-Minuten, bis der GPU-Worker endet und sein VRAM frei wird; `0` behält ihn |
+| `STT_LANGUAGE` | `de` | Standardsprache (`auto` erkennt sie) |
+| `STT_EAGER_LOAD` | `1` | CPU-Modell beim Start laden |
 | `STT_CONFIG_FILE` | `/state/config.json` | Ablage der über `/config` geänderten Einstellungen (Volume `stt_suite_state`). Die Umgebung liefert nur die ersten Standardwerte; sobald die Datei existiert, gilt sie. Zum Zurücksetzen löschen |
 | `WHISPER_CPU_COMPUTE` / `WHISPER_GPU_COMPUTE` | `int8` / `float16` | Rechengenauigkeit |
 | `DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | Pipeline der Sprechererkennung |
