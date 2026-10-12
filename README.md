@@ -101,6 +101,14 @@ the GPU has no room for the model (or is busy with another one), `500` otherwise
 curl -F file=@speech.webm -F device=cuda http://localhost:5080/transcribe
 ```
 
+## Updating from before 12 October 2026
+
+Engine, model and precision are now set per device: `STT_ENGINE` became `STT_CPU_ENGINE` and `STT_GPU_ENGINE`, and
+`WHISPER_GPU_MIN_MODEL` is gone (the GPU no longer steps down by itself; `device=auto` and its list do that when you
+ask). Rename the variable in your `.env`. Settings already saved in the state volume (`/state/config.json`) hold the old
+key `engine`, which the service refuses at start: replace it by `cpu_engine` and `gpu_engine` with the same value, or
+delete the file to return to the `.env`. A fresh installation has nothing to change.
+
 ## Configuration
 
 Set in `docker-compose.yml` or as environment variables when starting compose:

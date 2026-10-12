@@ -101,6 +101,15 @@ keinen Platz hat (oder mit einem anderen beschäftigt ist), sonst `500`.
 curl -F file=@sprache.webm -F device=cuda http://localhost:5080/transcribe
 ```
 
+## Aktualisieren von vor dem 12. Oktober 2026
+
+Engine, Modell und Genauigkeit werden jetzt je Gerät eingestellt: Aus `STT_ENGINE` wurden `STT_CPU_ENGINE` und
+`STT_GPU_ENGINE`, und `WHISPER_GPU_MIN_MODEL` entfällt (die GPU steigt nicht mehr von selbst ab; `device=auto` mit seiner Liste
+tut das, wenn du es verlangst). Benenne die Variable in deiner `.env` um. Im Zustands-Volume gespeicherte Einstellungen
+(`/state/config.json`) tragen noch den alten Schlüssel `engine`, den der Dienst beim Start ablehnt: Ersetze ihn durch
+`cpu_engine` und `gpu_engine` mit demselben Wert, oder lösche die Datei, um zur `.env` zurückzukehren. Eine frische
+Installation braucht nichts davon.
+
 ## Konfiguration
 
 In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
