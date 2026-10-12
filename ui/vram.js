@@ -1,5 +1,6 @@
 import { service } from './api.js'
 import { cardTable, h, replaceChildren } from './dom.js'
+import { formatNumber } from './format.js'
 import { t } from './i18n.js'
 
 // How often the page asks for the progress of a running burn-in.
@@ -72,7 +73,7 @@ export function vramView({ show, fail }) {
   function table() {
     const measured = (row) => config.vram_measured[row.engine]?.[row.model] !== undefined
     return cardTable([t('engine'), t('model'), t('needMib'), t('source'), t('measureIt')], rows().map((row) => [
-      row.engine, row.model, String(row.mib),
+      row.engine, row.model, formatNumber(row.mib),
       h('span', { class: measured(row) ? 'status loaded' : 'muted' }, t(measured(row) ? 'measured' : 'estimate')),
       h('input', { type: 'checkbox', checked: chosen.has(keyOf(row.engine, row.model)), disabled: burnIn.running,
         onchange: (event) => { if (event.target.checked) chosen.add(keyOf(row.engine, row.model)); else chosen.delete(keyOf(row.engine, row.model)) } }),
@@ -84,7 +85,7 @@ export function vramView({ show, fail }) {
     return h('div', {}, h('h3', {}, t('burnInResults')),
       burnIn.error ? h('p', { class: 'status busy' }, burnIn.error) : null,
       cardTable([t('engine'), t('model'), t('measuredMib'), t('card'), t('seconds')],
-        burnIn.results.map((result) => [result.engine, result.model, String(result.measured_mib), String(result.card), String(result.seconds)])))
+        burnIn.results.map((result) => [result.engine, result.model, formatNumber(result.measured_mib), formatNumber(result.card), formatNumber(result.seconds)])))
   }
 
   function render() {

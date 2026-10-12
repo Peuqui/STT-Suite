@@ -1,5 +1,6 @@
 import { service } from './api.js'
 import { h, replaceChildren } from './dom.js'
+import { formatNumber } from './format.js'
 import { t } from './i18n.js'
 
 // Transcribes a file or a recording from the microphone with the chosen device and engine.
@@ -77,7 +78,7 @@ export function testView({ show, fail }) {
       withSpeakers ? [h('h3', {}, t('speakersText')), h('div', { class: 'transcript' }, withSpeakers)] : null,
       fallback ? [h('h3', {}, t('fallbackUsed')), h('ul', {}, fallback.map((entry) => h('li', {}, `${entry.tried}: ${entry.reason}`)))] : null,
       h('h3', {}, t('result')),
-      h('div', { class: 'fields' }, Object.entries(rest).flatMap(([key, value]) => [h('label', {}, fieldLabel(key)), h('code', {}, typeof value === 'object' ? JSON.stringify(value) : String(value))])))
+      h('div', { class: 'fields' }, Object.entries(rest).flatMap(([key, value]) => [h('label', {}, fieldLabel(key)), h('code', {}, typeof value === 'object' ? JSON.stringify(value) : typeof value === 'number' ? formatNumber(value) : String(value))])))
   }
 
   function render() {
