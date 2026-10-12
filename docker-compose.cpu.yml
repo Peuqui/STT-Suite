@@ -2,5 +2,5 @@
 #   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
 # The base file reserves every GPU for the container, which Docker refuses on a machine without one.
 services:
-  whisper:
+  stt:
     deploy: !reset null
