@@ -22,10 +22,18 @@ its name `whisper-stt`, so a running one is not recreated.)
   released again after a configurable idle time.
 - **Exactly the model you chose.** `device=cuda` loads the configured GPU model or answers `503` when no
   card has the free VRAM it needs (`vram_mib.json`); nothing is substituted silently.
-- **`device=auto` for a fallback you ask for:** the configured GPU model first, then the smaller ones
-  below it (Whisper: the next sizes down; Parakeet: int8 for fp32), then the configured CPU model. Which
-  candidate fits is decided from the table of VRAM needs and one `nvidia-smi` query, without loading
-  anything on trial. The answer names what transcribed and lists in `fallback` what could not and why.
+- **`device=auto` for a fallback you ask for:** it goes through a list you set (`auto_chain` in the
+  configuration, on the web page under Configuration: entries of device, engine and model that can be
+  moved, switched off, changed and added; at first the configured GPU model and then the configured CPU
+  model). The first entry that can takes the request. Which one can is decided from the table of VRAM needs
+  and one `nvidia-smi` query, without loading anything on trial, and before a model in memory is let go: a
+  model that cannot be loaded never costs the one that is. The answer names what transcribed and lists in
+  `fallback` what could not and why.
+- **A table of VRAM needs you measure.** The shipped values are estimates. The web page (tab Graphics memory)
+  runs a burn-in: it loads each chosen model onto a GPU in turn, transcribes a recording and takes the highest
+  rise of the used memory; the result replaces the estimate and is kept in the state volume. A margin
+  (`vram_margin_mib`, default 256 MiB) is added to every need and kept free on the card; make it smaller when a
+  model just no longer fits, or let the list go on to the next smaller one.
 - **Optional speaker diarization** with pyannote, on a second GPU, per request.
 - A web page at `/` (it goes to `/ui/`; German and English, light and dark, like the TTS-Suite's): the status of the
   models on the CPU and the GPU with a button to release each, the runtime configuration, and a test that
@@ -67,6 +75,7 @@ and survive rebuilds. The container restarts with Docker (`restart: unless-stopp
 | GET | `/status` | Detailed status and the full runtime configuration |
 | GET/POST | `/config` | Read or change the runtime configuration (JSON) |
 | POST | `/unload?device=cpu\|gpu\|cuda\|all` | Unload models; `409` while a GPU transcription runs, `force=1` kills it anyway |
+| POST, GET | `/burn-in` | `POST` (form: `file`, optional `entries`, a JSON list of `{"engine", "model"}`) starts the measurement of the VRAM models need, in the background; `GET` shows how it stands (`running`, `step`, `results`, `error`). `409` while one runs or the GPU transcribes |
 | GET | `/`, `/ui/` | Web page: status, configuration, test |
 
 `POST /transcribe` takes a multipart form:
@@ -109,7 +118,9 @@ Set in `docker-compose.yml` or as environment variables when starting compose:
 | `STT_CPU_ENGINE` / `STT_GPU_ENGINE` | `whisper` / `whisper` | Engine on the CPU / the GPU when a request names none: `whisper` or `parakeet` |
 | `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet precision on the CPU / the GPU when a request names none: `fp32` or `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet cuts audio at speech pauses into chunks of at most this length, merging pauses shorter than this |
-| `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision; estimates until `scripts/burn_in.py` has measured them |
+| `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision: estimates, replaced by what a burn-in measured |
+| `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Where the measured needs are kept (volume `whisper_state`); delete it to return to the estimates |
+| `STT_VRAM_MARGIN_MIB` | `256` | Free VRAM kept on a card beyond what a model needs; also set on the web page |
 
 Available models: `tiny`, `base`, `small`, `medium`, `large-v3`.
 

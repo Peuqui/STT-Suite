@@ -31,5 +31,7 @@ export const service = {
   config: () => json('../config'),
   saveConfig: (config) => json('../config', { method: 'POST', body: config }),
   unload: (device, force) => json(`../unload${query({ device, force: force ? '1' : null })}`, { method: 'POST' }),
+  burnIn: () => json('../burn-in'),
+  startBurnIn: (form) => json('../burn-in', { method: 'POST', body: form }),
   transcribe: (form) => json('../transcribe', { method: 'POST', body: form }),
 }
