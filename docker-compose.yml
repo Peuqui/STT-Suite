@@ -19,17 +19,15 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       # Whisper model size (tiny, base, small, medium, large-v3)
       - WHISPER_MODEL=${WHISPER_MODEL:-medium}
-      # GPU gets the big model; the VRAM degradation chain in server.py
-      # falls back to smaller ones when no card has room. CPU keeps the
-      # WHISPER_MODEL default — large on CPU would be painfully slow.
+      # The GPU gets the big model; CPU keeps the WHISPER_MODEL default — large on CPU would be
+      # painfully slow. A model that fits no card is not loaded: the GPU answers 503 (device=auto
+      # tries the next smaller one, then the CPU).
       - WHISPER_GPU_MODEL=${WHISPER_GPU_MODEL:-large-v3}
-      # The degradation chain stops here; below it the GPU answers 503 instead of loading
-      # a model too weak to be useful (small and below transcribe poorly).
-      - WHISPER_GPU_MIN_MODEL=${WHISPER_GPU_MIN_MODEL:-medium}
-      # Engine when a request names none: whisper or parakeet (NVIDIA Parakeet
-      # TDT 0.6B v3 — 25 European languages, much faster, see README).
-      # Parakeet quality per device: fp32 (full) or int8 (smaller, more word errors).
-      - STT_ENGINE=${STT_ENGINE:-whisper}
+      # Each device has its own engine, any mix: whisper or parakeet (NVIDIA Parakeet TDT 0.6B v3 —
+      # 25 European languages, much faster, see README). Parakeet quality per device: fp32 (full)
+      # or int8 (smaller, more word errors).
+      - STT_CPU_ENGINE=${STT_CPU_ENGINE:-whisper}
+      - STT_GPU_ENGINE=${STT_GPU_ENGINE:-whisper}
       - STT_CPU_QUALITY=${STT_CPU_QUALITY:-fp32}
       - STT_GPU_QUALITY=${STT_GPU_QUALITY:-fp32}
       # Compute type per device (int8 for CPU, float16 for GPU)

@@ -14,15 +14,18 @@ its name `whisper-stt`, so a running one is not recreated.)
 
 [Deutsche Version](README.de.md)
 
-- **Two engines, chosen per request:** Whisper or Parakeet (see below).
+- **Two engines, any mix per device:** Whisper (a size from `tiny` to `large-v3`) or Parakeet (fp32 or
+  int8), set for the CPU and for the GPU independently: Parakeet int8 on the CPU and Whisper large-v3 on
+  the GPU is as possible as the other way round. A request can override engine, model and precision.
 - **CPU and GPU, chosen per request.** The CPU model stays loaded all the time (no load time,
   no VRAM). The GPU model is loaded on demand into the card with the most free VRAM and
   released again after a configurable idle time.
-- **No silent device switch.** If no GPU has room, `/transcribe` answers `503`; the client
-  decides whether to use the CPU instead.
-- **VRAM-aware model choice.** The GPU tries the configured model (default `large-v3`) and
-  steps down to smaller ones when VRAM is short, but never below `WHISPER_GPU_MIN_MODEL`
-  (default `medium`; smaller models transcribe too poorly to be worth it).
+- **Exactly the model you chose.** `device=cuda` loads the configured GPU model or answers `503` when no
+  card has the free VRAM it needs (`vram_mib.json`); nothing is substituted silently.
+- **`device=auto` for a fallback you ask for:** the configured GPU model first, then the smaller ones
+  below it (Whisper: the next sizes down; Parakeet: int8 for fp32), then the configured CPU model. Which
+  candidate fits is decided from the table of VRAM needs and one `nvidia-smi` query, without loading
+  anything on trial. The answer names what transcribed and lists in `fallback` what could not and why.
 - **Optional speaker diarization** with pyannote, on a second GPU, per request.
 - A web page at `/` (it goes to `/ui/`; German and English, light and dark, like the TTS-Suite's): the status of the
   models on the CPU and the GPU with a button to release each, the runtime configuration, and a test that
@@ -71,15 +74,18 @@ and survive rebuilds. The container restarts with Docker (`restart: unless-stopp
 | Field | Meaning |
 |---|---|
 | `file` | Audio file (WAV, MP3, M4A, OGG, FLAC, WebM) |
-| `device` | `cpu` (default) or `cuda` |
+| `device` | `cpu` (default), `cuda`, or `auto` (the fallback list above) |
 | `language` | Language code such as `de` or `en`; default from the configuration |
 | `diarize` | `1` to label speakers (default off) |
 | `num_speakers` | Optional hint when the number of speakers is known |
-| `engine` | `whisper` or `parakeet`; default `STT_ENGINE` |
-| `quality` | Parakeet only: `fp32` or `int8`; default `STT_CPU_QUALITY` or `STT_GPU_QUALITY`, by device |
+| `engine` | `whisper` or `parakeet`; default the engine configured for the device (`cpu_engine`, `gpu_engine`) |
+| `model` | Whisper only: a size such as `medium`; default `cpu_model` or `gpu_model`, by device |
+| `quality` | Parakeet only: `fp32` or `int8`; default `cpu_quality` or `gpu_quality`, by device |
 
-The answer is JSON with `text`, the time taken and the device used. Errors: `400` for a
-missing file or an invalid device, `503` when no GPU has room for a model, `500` otherwise.
+The answer is JSON with `text`, the time taken, the device and the engine used and its model (`model` for
+Whisper, `quality` for Parakeet); after a fallback also `fallback`, the list of what could not take the
+request, each with `tried` and `reason`. Errors: `400` for a missing file or an invalid value, `503` when
+the GPU has no room for the model (or is busy with another one), `500` otherwise.
 
 ```
 curl -F file=@speech.webm -F device=cuda http://localhost:5080/transcribe
@@ -93,18 +99,17 @@ Set in `docker-compose.yml` or as environment variables when starting compose:
 |---|---|---|
 | `WHISPER_MODEL` | `medium` | Model on the CPU (and the GPU default when `WHISPER_GPU_MODEL` is unset) |
 | `WHISPER_CPU_MODEL` | `WHISPER_MODEL` | Model on the CPU |
-| `WHISPER_GPU_MODEL` | `large-v3` | First choice on the GPU |
-| `WHISPER_GPU_MIN_MODEL` | `medium` | Smallest model the GPU steps down to |
+| `WHISPER_GPU_MODEL` | `large-v3` | Whisper size on the GPU |
 | `WHISPER_GPU_TTL_MINUTES` | `30` | Idle minutes until the GPU worker is stopped and its VRAM freed; `0` keeps it |
 | `WHISPER_LANGUAGE` | `de` | Default language (`auto` detects it) |
 | `WHISPER_EAGER_LOAD` | `1` | Load the CPU model at start |
 | `STT_CONFIG_FILE` | `/state/config.json` | Where settings changed via `/config` are kept (volume `whisper_state`). The environment only gives the first defaults; once this file exists it wins. Delete it to return to the environment |
 | `WHISPER_CPU_COMPUTE` / `WHISPER_GPU_COMPUTE` | `int8` / `float16` | Compute types |
 | `DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | Diarization pipeline |
-| `STT_ENGINE` | `whisper` | Engine when a request names none: `whisper` or `parakeet` |
-| `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet quality on the CPU / the GPU when a request names none: `fp32` or `int8` |
+| `STT_CPU_ENGINE` / `STT_GPU_ENGINE` | `whisper` / `whisper` | Engine on the CPU / the GPU when a request names none: `whisper` or `parakeet` |
+| `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet precision on the CPU / the GPU when a request names none: `fp32` or `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet cuts audio at speech pauses into chunks of at most this length, merging pauses shorter than this |
-| `PARAKEET_MIN_VRAM_MIB` | `4500` | Free VRAM a card needs for Parakeet |
+| `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision; estimates until `scripts/burn_in.py` has measured them |
 
 Available models: `tiny`, `base`, `small`, `medium`, `large-v3`.
 

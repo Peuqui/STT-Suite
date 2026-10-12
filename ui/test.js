@@ -10,7 +10,7 @@ export function testView({ show, fail }) {
   let recorder = null
   let running = false
   let result = null
-  const choice = { device: 'cpu', engine: '', language: '', diarize: false }
+  const choice = { device: 'cpu', engine: '', model: '', quality: '', language: '', diarize: false }
 
   async function load() {
     try {
@@ -44,7 +44,7 @@ export function testView({ show, fail }) {
     const form = new FormData()
     form.append('file', audio.blob, audio.name)
     form.append('device', choice.device)
-    if (choice.engine) form.append('engine', choice.engine)
+    for (const key of ['engine', 'model', 'quality']) if (choice[key]) form.append(key, choice[key])
     if (choice.language) form.append('language', choice.language)
     if (choice.diarize) form.append('diarize', '1')
     running = true
@@ -62,12 +62,20 @@ export function testView({ show, fail }) {
   // What the service sends besides the text: a name of its own when the page has one, else the key as sent.
   const fieldLabel = (key) => (t(`field_${key}`) === `field_${key}` ? key : t(`field_${key}`))
 
+  // A choice for this request only; empty keeps what the service is set to.
+  function overrideSelect(key, options) {
+    return h('select', { onchange: (event) => (choice[key] = event.target.value) },
+      h('option', { value: '', selected: choice[key] === '' }, t('asConfigured')),
+      options.map((option) => h('option', { value: option, selected: option === choice[key] }, option)))
+  }
+
   function resultView() {
     if (result === null) return null
-    const { text, text_speakers: withSpeakers, ...rest } = result
+    const { text, text_speakers: withSpeakers, fallback, ...rest } = result
     return h('div', {},
       h('h3', {}, t('transcript')), h('div', { class: 'transcript' }, text ?? ''),
       withSpeakers ? [h('h3', {}, t('speakersText')), h('div', { class: 'transcript' }, withSpeakers)] : null,
+      fallback ? [h('h3', {}, t('fallbackUsed')), h('ul', {}, fallback.map((entry) => h('li', {}, `${entry.tried}: ${entry.reason}`)))] : null,
       h('h3', {}, t('result')),
       h('div', { class: 'fields' }, Object.entries(rest).flatMap(([key, value]) => [h('label', {}, fieldLabel(key)), h('code', {}, typeof value === 'object' ? JSON.stringify(value) : String(value))])))
   }
@@ -91,11 +99,10 @@ export function testView({ show, fail }) {
           audio !== null && recorder === null ? h('span', { class: 'muted' }, audio.name) : null),
         h('label', {}, t('deviceField')),
         h('select', { onchange: (event) => (choice.device = event.target.value) },
-          ['cpu', 'cuda'].map((device) => h('option', { value: device, selected: device === choice.device }, device === 'cpu' ? t('cpu') : t('gpu')))),
-        h('label', {}, t('engineField')),
-        h('select', { onchange: (event) => (choice.engine = event.target.value) },
-          h('option', { value: '', selected: choice.engine === '' }, t('engineDefault', { engine: config.engine })),
-          config.engines.map((engine) => h('option', { value: engine, selected: engine === choice.engine }, engine))),
+          ['cpu', 'cuda', 'auto'].map((device) => h('option', { value: device, selected: device === choice.device }, t(`device_${device}`)))),
+        h('label', {}, t('engineField')), overrideSelect('engine', config.engines),
+        h('label', {}, t('modelOverride')), overrideSelect('model', config.available_models),
+        h('label', {}, t('qualityOverride')), overrideSelect('quality', config.parakeet_qualities),
         h('label', {}, t('languageField')),
         h('input', { type: 'text', value: choice.language, placeholder: config.language, onchange: (event) => (choice.language = event.target.value.trim()) }),
         h('span'), h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: choice.diarize, onchange: (event) => (choice.diarize = event.target.checked) }), t('diarize'))),

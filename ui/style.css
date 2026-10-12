@@ -89,3 +89,6 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .fields { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; align-items: center; }
 .fields > label { color: var(--muted); }
 @media (max-width: 640px) { .fields { grid-template-columns: 1fr; gap: 2px; } .fields > label { margin-top: 8px; } }
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; padding: 8px 14px 12px; }
+legend { color: var(--heading); font-weight: 600; padding: 0 6px; }
+fieldset > p { margin: 4px 0 8px; }
