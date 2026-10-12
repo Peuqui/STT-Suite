@@ -1,10 +1,10 @@
-name: whisper-stt  # pinned: keeps the running container when the folder is renamed (STT-Suite)
+name: stt-suite  # pinned: keeps the running container when the folder is renamed
 
 services:
-  whisper:
-    image: whisper-stt
+  stt:
+    image: stt-suite
     build: .
-    container_name: whisper-stt
+    container_name: stt-suite
     restart: unless-stopped  # Always running (CPU mode has no VRAM cost)
     ports:
       - "5080:5052"
@@ -51,9 +51,9 @@ services:
       - HF_TOKEN_PATH=/hf-host/token
     volumes:
       # Persistent HuggingFace model cache
-      - whisper_models:/root/.cache/huggingface
+      - stt_suite_models:/root/.cache/huggingface
       # Settings changed via /config (survive a restart; the .env only gives the first defaults)
-      - whisper_state:/state
+      - stt_suite_state:/state
       # pyannote models are gated — reuse the host's HF token instead of
       # copying it into .env. The directory, not the file: a missing file
       # would make Docker create a directory in its place, and every
@@ -68,7 +68,7 @@ services:
       start_period: 60s
 
 volumes:
-  whisper_models:
-    name: whisper_models
-  whisper_state:
-    name: whisper_state
+  stt_suite_models:
+    name: stt_suite_models
+  stt_suite_state:
+    name: stt_suite_state

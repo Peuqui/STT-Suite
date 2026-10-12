@@ -9,8 +9,8 @@ and [Agent-Orc](https://github.com/Peuqui/Agent-Orc) use it for voice input.
 STT-Suite is one half of a pair: it listens, [TTS-Suite](https://github.com/Peuqui/TTS-Suite)
 speaks. Each is a service of its own that any program can use through a few HTTP calls, and
 neither depends on the programs that use it. They share conventions: a `GET /health` on every
-service, errors as JSON, and a README in German and in English. (The Docker container keeps
-its name `whisper-stt`, so a running one is not recreated.)
+service, errors as JSON, and a README in German and in English. (The Docker container is called
+`stt-suite`.)
 
 [Deutsche Version](README.de.md)
 
@@ -64,7 +64,7 @@ Without an NVIDIA GPU, or without its driver in Docker, the base file stops with
 driver "nvidia"”: add the CPU file, `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build`
 (it takes the GPU reservation away).
 
-The service listens on port **5080**. Models are cached in the Docker volume `whisper_models`
+The service listens on port **5080**. Models are cached in the Docker volume `stt_suite_models`
 and survive rebuilds. The container restarts with Docker (`restart: unless-stopped`).
 
 ## API
@@ -107,7 +107,11 @@ Engine, model and precision are now set per device: `STT_ENGINE` became `STT_CPU
 `WHISPER_GPU_MIN_MODEL` is gone (the GPU no longer steps down by itself; `device=auto` and its list do that when you
 ask). Rename the variable in your `.env`. Settings already saved in the state volume (`/state/config.json`) hold the old
 key `engine`, which the service refuses at start: replace it by `cpu_engine` and `gpu_engine` with the same value, or
-delete the file to return to the `.env`. A fresh installation has nothing to change.
+delete the file to return to the `.env`. The container, the image and the volumes were renamed as well: `whisper-stt` became `stt-suite`, `whisper_models` became
+`stt_suite_models` and `whisper_state` became `stt_suite_state`. Remove the old container (`docker rm -f whisper-stt`), start the
+new one once (`docker compose up --no-start`, which makes the new volumes) and copy the contents of the two old volumes into
+them (for example `docker run --rm -v whisper_models:/from:ro -v stt_suite_models:/to --entrypoint cp stt-suite -a /from/. /to/`),
+or the models are downloaded again and the settings start from the `.env`. A fresh installation has nothing to change.
 
 ## Configuration
 
@@ -121,14 +125,14 @@ Set in `docker-compose.yml` or as environment variables when starting compose:
 | `WHISPER_GPU_TTL_MINUTES` | `30` | Idle minutes until the GPU worker is stopped and its VRAM freed; `0` keeps it |
 | `WHISPER_LANGUAGE` | `de` | Default language (`auto` detects it) |
 | `WHISPER_EAGER_LOAD` | `1` | Load the CPU model at start |
-| `STT_CONFIG_FILE` | `/state/config.json` | Where settings changed via `/config` are kept (volume `whisper_state`). The environment only gives the first defaults; once this file exists it wins. Delete it to return to the environment |
+| `STT_CONFIG_FILE` | `/state/config.json` | Where settings changed via `/config` are kept (volume `stt_suite_state`). The environment only gives the first defaults; once this file exists it wins. Delete it to return to the environment |
 | `WHISPER_CPU_COMPUTE` / `WHISPER_GPU_COMPUTE` | `int8` / `float16` | Compute types |
 | `DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | Diarization pipeline |
 | `STT_CPU_ENGINE` / `STT_GPU_ENGINE` | `whisper` / `whisper` | Engine on the CPU / the GPU when a request names none: `whisper` or `parakeet` |
 | `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet precision on the CPU / the GPU when a request names none: `fp32` or `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet cuts audio at speech pauses into chunks of at most this length, merging pauses shorter than this |
 | `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision: estimates, replaced by what a burn-in measured |
-| `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Where the measured needs are kept (volume `whisper_state`); delete it to return to the estimates |
+| `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Where the measured needs are kept (volume `stt_suite_state`); delete it to return to the estimates |
 | `STT_VRAM_MARGIN_MIB` | `256` | Free VRAM kept on a card beyond what a model needs; also set on the web page |
 
 Available models: `tiny`, `base`, `small`, `medium`, `large-v3`.
