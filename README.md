@@ -31,7 +31,8 @@ its name `whisper-stt`, so a running one is not recreated.)
   `fallback` what could not and why.
 - **A table of VRAM needs you measure.** The shipped values are estimates. The web page (tab Graphics memory)
   runs a burn-in: it loads each chosen model onto a GPU in turn, transcribes a recording and takes the highest
-  rise of the used memory; the result replaces the estimate and is kept in the state volume. A margin
+  rise of the used memory (use a recording typical of your use: Parakeet needs about 3.7 GB for a 10 second dictation but
+  about 6.3 GB for a recording of several minutes, which it works on in pieces of up to 60 seconds); the result replaces the estimate and is kept in the state volume. A margin
   (`vram_margin_mib`, default 256 MiB) is added to every need and kept free on the card; make it smaller when a
   model just no longer fits, or let the list go on to the next smaller one.
 - **Optional speaker diarization** with pyannote, on a second GPU, per request.

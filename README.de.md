@@ -31,7 +31,8 @@ behält seinen Namen `whisper-stt`, damit ein laufender nicht neu angelegt wird.
   konnte und warum.
 - **Eine Tabelle des VRAM-Bedarfs, die du misst.** Die mitgelieferten Werte sind Schätzungen. Die Webseite (Reiter Grafikspeicher)
   macht ein Burn-in: Sie lädt jedes gewählte Modell nacheinander auf eine GPU, transkribiert eine Aufnahme und nimmt den höchsten
-  Anstieg des belegten Speichers; das Ergebnis ersetzt die Schätzung und liegt im Zustands-Volume. Ein Puffer
+  Anstieg des belegten Speichers (nimm eine Aufnahme, wie sie bei dir typisch ist: Parakeet braucht für ein Diktat von 10 Sekunden
+  etwa 3,7 GB, für eine Aufnahme von mehreren Minuten, die es in Stücken bis 60 Sekunden abarbeitet, etwa 6,3 GB); das Ergebnis ersetzt die Schätzung und liegt im Zustands-Volume. Ein Puffer
   (`vram_margin_mib`, Standard 256 MiB) kommt zu jedem Bedarf dazu und bleibt auf der Karte frei; kleiner machen, wenn ein
   Modell knapp nicht mehr passt, oder die Liste zum nächstkleineren weitergehen lassen.
 - **Optionale Sprechererkennung** mit pyannote, auf einer zweiten GPU, pro Anfrage.
