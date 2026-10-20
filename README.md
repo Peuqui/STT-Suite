@@ -123,6 +123,7 @@ Set in `docker-compose.yml` or as environment variables when starting compose:
 | `WHISPER_CPU_MODEL` | `WHISPER_MODEL` | Model on the CPU |
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper size on the GPU |
 | `STT_GPU_TTL_MINUTES` | `30` | Idle minutes until the GPU worker is stopped and its VRAM freed; `0` keeps it |
+| `STT_GPU_PLACEMENT_LOCK` | unset | Lock file (inside the container, e.g. `/gpu-placement/placement.lock`, in the directory `STT_GPU_PLACEMENT_DIR` of the host mounted there) that this service and the TTS-Suite lock with `flock` while they choose a card and load onto it. Two services starting together then do not pick the same card. Unset = off; the file must exist and be writable |
 | `STT_LANGUAGE` | `de` | Default language (`auto` detects it) |
 | `STT_EAGER_LOAD` | `1` | Load the CPU model at start |
 | `STT_CONFIG_FILE` | `/state/config.json` | Where settings changed via `/config` are kept (volume `stt_suite_state`). The environment only gives the first defaults; once this file exists it wins. Delete it to return to the environment |

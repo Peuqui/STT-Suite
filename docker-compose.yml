@@ -49,6 +49,9 @@ services:
       # host's token file through the mount below (single source of truth).
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_TOKEN_PATH=/hf-host/token
+      # Lock file shared with the TTS-Suite: choosing a card and loading the model onto it happens one
+      # program at a time, so two services starting together do not pick the same card. Unset = off.
+      - STT_GPU_PLACEMENT_LOCK=${STT_GPU_PLACEMENT_LOCK:-}
     volumes:
       # Persistent HuggingFace model cache
       - stt_suite_models:/root/.cache/huggingface
@@ -60,6 +63,8 @@ services:
       # huggingface_hub call then failed with IsADirectoryError. A missing
       # token now simply means no token.
       - ${HOME}/.cache/huggingface:/hf-host:ro
+      # Directory of the shared lock file (create it, and the file, as your user before the first start)
+      - ${STT_GPU_PLACEMENT_DIR:-/tmp}:/gpu-placement
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5052/health"]
       interval: 30s

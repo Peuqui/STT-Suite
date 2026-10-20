@@ -21,6 +21,8 @@ Endpoints:
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import gc
 import multiprocessing
 import json
@@ -384,6 +386,22 @@ _gpu_request_queue: multiprocessing.Queue | None = None
 _gpu_result_queue: multiprocessing.Queue | None = None
 _gpu_busy = False  # True while a transcription job is in flight
 _gpu_lock = threading.Lock()
+
+# Lock file shared with the TTS-Suite (mounted into the container). Whoever chooses a card holds the lock
+# until its model sits in VRAM, so the next one sees the real free memory instead of choosing the same
+# card at the same moment. Unset = no other program to coordinate with.
+_PLACEMENT_LOCK_FILE = os.environ.get("STT_GPU_PLACEMENT_LOCK", "")
+
+
+@contextlib.contextmanager
+def _placement_lock():
+    """Choosing a card and loading the model onto it, one program at a time across the machine."""
+    if not _PLACEMENT_LOCK_FILE:
+        yield
+        return
+    with open(_PLACEMENT_LOCK_FILE, "a") as lock_file:  # closing the file (or dying) releases the lock
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        yield
 _gpu_ttl_timer: threading.Timer | None = None
 _last_gpu_request = 0.0
 _gpu_device_index: int | None = None
@@ -594,13 +612,14 @@ def _start_gpu_worker(engine: str, model: str, quality: str, check_fit: bool = T
     reason it is not.
     """
     need = _vram_needed_mib(engine, model, quality) if check_fit else 0
-    selected = _find_best_gpu(min_vram_mib=need, tag="Parakeet" if engine == "parakeet" else "Whisper")
-    if selected is None:
-        return _refusal(need, max(_free_per_card_mib().values(), default=0))
-    name = f"parakeet-{quality}" if engine == "parakeet" else model
-    compute = "" if engine == "parakeet" else _detect_gpu_compute(selected[0])
-    if not _spawn_gpu_worker(selected, name, compute, engine, quality):
-        return f"the worker for {name} did not start"
+    with _placement_lock():
+        selected = _find_best_gpu(min_vram_mib=need, tag="Parakeet" if engine == "parakeet" else "Whisper")
+        if selected is None:
+            return _refusal(need, max(_free_per_card_mib().values(), default=0))
+        name = f"parakeet-{quality}" if engine == "parakeet" else model
+        compute = "" if engine == "parakeet" else _detect_gpu_compute(selected[0])
+        if not _spawn_gpu_worker(selected, name, compute, engine, quality):
+            return f"the worker for {name} did not start"
     return None
 
 
@@ -1002,6 +1021,11 @@ def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing
 
 
 def _start_diarize_worker() -> bool:
+    with _placement_lock():
+        return _choose_card_and_spawn_diarize_worker()
+
+
+def _choose_card_and_spawn_diarize_worker() -> bool:
     """Start the diarization child process, avoiding Whisper's GPU."""
     global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index
 
