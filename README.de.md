@@ -123,6 +123,7 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `WHISPER_CPU_MODEL` | `WHISPER_MODEL` | Modell auf der CPU |
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper-Größe auf der GPU |
 | `STT_GPU_TTL_MINUTES` | `30` | Leerlauf-Minuten, bis der GPU-Worker endet und sein VRAM frei wird; `0` behält ihn |
+| `STT_GPU_PLACEMENT_LOCK` | nicht gesetzt | Sperrdatei (im Container, z. B. `/gpu-placement/placement.lock`, im Verzeichnis `STT_GPU_PLACEMENT_DIR` des Hosts, das dort eingehängt ist), die dieser Dienst und die TTS-Suite mit `flock` sperren, solange sie eine Karte wählen und darauf laden. Zwei gleichzeitig startende Dienste wählen dann nicht dieselbe Karte. Nicht gesetzt = aus; die Datei muss existieren und schreibbar sein |
 | `STT_LANGUAGE` | `de` | Standardsprache (`auto` erkennt sie) |
 | `STT_EAGER_LOAD` | `1` | CPU-Modell beim Start laden |
 | `STT_CONFIG_FILE` | `/state/config.json` | Ablage der über `/config` geänderten Einstellungen (Volume `stt_suite_state`). Die Umgebung liefert nur die ersten Standardwerte; sobald die Datei existiert, gilt sie. Zum Zurücksetzen löschen |
