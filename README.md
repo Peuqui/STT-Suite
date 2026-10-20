@@ -117,6 +117,8 @@ or the models are downloaded again and the settings start from the `.env`. A fre
 
 Set in `docker-compose.yml` or as environment variables when starting compose:
 
+Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt && .venv/bin/python -m pytest tests`.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `WHISPER_MODEL` | `medium` | Model on the CPU (and the GPU default when `WHISPER_GPU_MODEL` is unset) |
