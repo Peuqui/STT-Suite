@@ -1,0 +1,4 @@
+# What `pytest tests` needs: the tests import server.py, whose heavy engines load lazily inside the image.
+# flask is pinned like in the Dockerfile.
+flask==3.1.3
+pytest
