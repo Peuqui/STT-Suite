@@ -937,6 +937,7 @@ _diarize_result_queue: multiprocessing.Queue | None = None
 _diarize_lock = threading.Lock()
 _diarize_ttl_timer: threading.Timer | None = None
 _diarize_device_index: int | None = None
+_diarize_uuid: str = ""  # UUID of the card the diarization worker sits on
 
 
 def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Queue,
@@ -1027,7 +1028,7 @@ def _start_diarize_worker() -> bool:
 
 def _choose_card_and_spawn_diarize_worker() -> bool:
     """Start the diarization child process, avoiding Whisper's GPU."""
-    global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index
+    global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index, _diarize_uuid
 
     selected = _find_best_gpu(min_vram_mib=_DIARIZE_MIN_VRAM_MIB,
                               exclude_uuid=_gpu_uuid or None,
@@ -1043,6 +1044,7 @@ def _choose_card_and_spawn_diarize_worker() -> bool:
     gpu_idx, gpu_uuid = selected
 
     _diarize_device_index = gpu_idx
+    _diarize_uuid = gpu_uuid
     _diarize_request_queue = multiprocessing.Queue()
     _diarize_result_queue = multiprocessing.Queue()
 
@@ -1070,7 +1072,7 @@ def _choose_card_and_spawn_diarize_worker() -> bool:
 
 def _kill_diarize_worker():
     """Kill the diarization process to release its VRAM."""
-    global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index
+    global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index, _diarize_uuid
 
     if _diarize_process is not None:
         print(f"[Diarize] Killing worker (PID {_diarize_process.pid}, "
@@ -1091,6 +1093,7 @@ def _kill_diarize_worker():
     _diarize_request_queue = None
     _diarize_result_queue = None
     _diarize_device_index = None
+    _diarize_uuid = ""
 
 
 def _reset_diarize_ttl():
@@ -1495,6 +1498,7 @@ def status():
     """Detailed status including memory usage and full config."""
     loaded = _loaded()
     gpu_alive = loaded["gpu"] is not None
+    diarize_alive = _diarize_process is not None and _diarize_process.is_alive()
     result = {
         **_config,
         # What is in memory now (a configured model can differ: it loads on the next request).
@@ -1507,6 +1511,12 @@ def status():
         "gpu_busy": _gpu_busy,
         "gpu_device_index": _gpu_device_index,
         "gpu_worker_pid": _gpu_process.pid if gpu_alive else None,
+        # Which card holds what, by UUID (indices differ between machines and containers), and what the
+        # worker took there right after loading. GPU-Orc reads these to free cards without guessing.
+        "gpu_uuid": _gpu_uuid if gpu_alive else None,
+        "gpu_footprint_mib": _gpu_footprint_mib if gpu_alive else None,
+        "diarize_loaded": diarize_alive,
+        "diarize_gpu_uuid": _diarize_uuid if diarize_alive else None,
         # SSOT for clients building a dropdown (AIfred STT tab, the web page).
         "available_models": AVAILABLE_MODELS,
         "engines": ENGINES,
