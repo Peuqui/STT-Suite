@@ -7,7 +7,7 @@ services:
     container_name: stt-suite
     restart: unless-stopped  # Always running (CPU mode has no VRAM cost)
     ports:
-      - "5080:5052"
+      - "127.0.0.1:5080:5052"
     deploy:
       resources:
         reservations:
