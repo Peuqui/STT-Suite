@@ -24,12 +24,13 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import gc
-import multiprocessing
 import json
+import multiprocessing
 import os
-import time
+import queue
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
@@ -438,7 +439,7 @@ def _find_best_gpu(min_vram_mib: int,
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,uuid,memory.free,memory.used,name,compute_cap",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=True,
         )
         best: tuple[int, str] | None = None
         best_free, best_used = 0, float("inf")
@@ -457,11 +458,7 @@ def _find_best_gpu(min_vram_mib: int,
                     continue
                 if free < min_vram:
                     continue
-                if best is None:
-                    best, best_free, best_used = (idx, uuid), free, used
-                elif used == 0 and best_used > 0:
-                    best, best_free, best_used = (idx, uuid), free, used
-                elif (used == 0) == (best_used == 0) and free > best_free:
+                if best is None or used == 0 and best_used > 0 or (used == 0) == (best_used == 0) and free > best_free:
                     best, best_free, best_used = (idx, uuid), free, used
         if best is not None:
             print(f"[{tag}] Selected GPU {best[0]} ({best[1]}, "
@@ -469,7 +466,7 @@ def _find_best_gpu(min_vram_mib: int,
         else:
             print(f"[{tag}] No GPU with >= {min_vram} MiB free VRAM", flush=True)
         return best
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
         print(f"[{tag}] GPU detection failed: {e}", flush=True)
         return None
 
@@ -481,7 +478,7 @@ def _detect_gpu_compute(gpu_idx: int) -> str:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,compute_cap",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=True,
         )
         for line in result.stdout.strip().split("\n"):
             parts = [p.strip() for p in line.split(",")]
@@ -491,8 +488,8 @@ def _detect_gpu_compute(gpu_idx: int) -> str:
                     return _config["gpu_compute"]
                 print(f"[STT] GPU {gpu_idx} CC {cc} < 7.0 → using int8", flush=True)
                 return "int8"
-    except Exception:
-        pass
+    except (subprocess.SubprocessError, OSError, ValueError) as error:
+        print(f"[STT] Compute capability of GPU {gpu_idx} unknown ({error}) → using int8", flush=True)
     return "int8"
 
 
@@ -513,7 +510,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
             from faster_whisper import WhisperModel
             print(f"[STT/GPU] Loading model '{model_name}' ({compute})...", flush=True)
             model = WhisperModel(model_name, device="cuda", compute_type=compute, device_index=0)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — whatever the load raises, the parent must hear of it
         print(f"[STT/GPU] Loading {engine} failed: {e}", flush=True)
         res_queue.put({"status": "failed", "error": str(e)})
         return
@@ -525,7 +522,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
     while True:
         try:
             job = req_queue.get(timeout=10)
-        except Exception:
+        except queue.Empty:
             continue  # Keep waiting
 
         if job is None:
@@ -582,7 +579,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
             if job.get("return_segments"):
                 payload["segments"] = seg_list
             res_queue.put(payload)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a failed job is the caller's answer, the worker goes on
             res_queue.put({"error": str(e)})
 
     print(f"[STT/GPU] Worker exiting (PID {os.getpid()})", flush=True)
@@ -593,7 +590,7 @@ def _free_per_card_mib() -> dict[int, int]:
     import subprocess
     try:
         result = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
-                                capture_output=True, text=True, timeout=5)
+                                capture_output=True, text=True, timeout=5, check=True)
     except FileNotFoundError:
         return {}  # no NVIDIA driver in this container: no card has anything free
     return {int(index): int(free) for index, free in (line.split(",") for line in result.stdout.strip().splitlines())}
@@ -666,52 +663,58 @@ def _spawn_gpu_worker(selected: tuple[int, str], model_name: str, compute: str,
             _gpu_footprint_mib = max(0, _used_per_card_mib().get(gpu_idx, 0) - used_before)
             print(f"[STT] GPU worker ({engine}) ready on GPU {gpu_idx}, {_gpu_footprint_mib} MiB", flush=True)
             return True
-    except Exception:
-        pass
+    except queue.Empty:
+        print(f"[STT] GPU worker ({engine}) did not report ready in time", flush=True)
 
     print(f"[STT] GPU worker ({engine}) failed to start", flush=True)
     _kill_gpu_worker()
     return False
 
 
-def _kill_gpu_worker():
-    """Kill the GPU child process to fully release CUDA context + VRAM."""
+# How long a worker gets to end after SIGKILL before its end counts as unproven.
+_WORKER_END_TIMEOUT_S = 10
+
+
+def _end_worker(process: multiprocessing.Process, label: str) -> str:
+    """End ``process`` and prove it: "" when it is gone, else what still runs. kill() on a process that
+    already ended does nothing, so this also proves a worker that died by itself."""
+    process.kill()
+    process.join(timeout=_WORKER_END_TIMEOUT_S)
+    if process.is_alive():
+        message = f"{label} PID {process.pid} still alive {_WORKER_END_TIMEOUT_S} s after SIGKILL"
+        print(f"[STT] {message}", flush=True)
+        return message
+    return ""
+
+
+def _kill_gpu_worker(withdrawn: str = "") -> str:
+    """End the GPU child process to release its CUDA context and VRAM.
+
+    Returns what still runs ("" when the worker is proven gone; then the state is cleared). A
+    transcription running on the worker is told ``withdrawn`` (or that the worker was ended): it counts as
+    "GPU unavailable", so a request with ``device=auto`` goes on on the CPU.
+    """
     global _gpu_process, _gpu_request_queue, _gpu_result_queue, _gpu_device_index, _gpu_model_name, _gpu_uuid
     global _gpu_engine, _gpu_quality, _gpu_footprint_mib
 
     if _gpu_process is not None:
-        gpu_idx = _gpu_device_index
-        pid = _gpu_process.pid
-        print(f"[STT] Killing GPU worker (PID {pid}, GPU {gpu_idx})", flush=True)
-        try:
-            _gpu_process.kill()
-            _gpu_process.join(timeout=5)
-        except Exception:
-            pass
+        print(f"[STT] Ending GPU worker (PID {_gpu_process.pid}, GPU {_gpu_device_index})", flush=True)
+        still_running = _end_worker(_gpu_process, "GPU worker")
+        if still_running:
+            return still_running
         _gpu_process = None
-        print("[STT] GPU worker killed — VRAM fully released", flush=True)
+        print("[STT] GPU worker ended — VRAM released", flush=True)
 
     if _gpu_request_queue is not None:
-        try:
-            _gpu_request_queue.close()
-        except Exception:
-            pass
+        _gpu_request_queue.close()
         _gpu_request_queue = None
     if _gpu_result_queue is not None:
         if _gpu_busy:
-            # Unblock a /transcribe request waiting on this queue — without
-            # this it would sit out the full result timeout after a force
-            # unload killed its worker mid-job. The queue is deliberately
-            # not closed here; the waiter still reads the error from it.
-            try:
-                _gpu_result_queue.put({"error": "GPU worker was unloaded mid-transcription"})
-            except Exception:
-                pass
+            # The /transcribe request waiting on this queue reads the reason from it instead of sitting
+            # out the full result timeout; that is why the queue stays open here.
+            _gpu_result_queue.put({"withdrawn": withdrawn or "the GPU worker was ended"})
         else:
-            try:
-                _gpu_result_queue.close()
-            except Exception:
-                pass
+            _gpu_result_queue.close()
         _gpu_result_queue = None
     _gpu_device_index = None
     _gpu_uuid = ""
@@ -719,6 +722,7 @@ def _kill_gpu_worker():
     _gpu_engine = ""
     _gpu_quality = ""
     _gpu_footprint_mib = 0
+    return ""
 
 
 def _reset_gpu_ttl():
@@ -781,7 +785,8 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
                 raise GpuUnavailable(f"the GPU is busy with {_gpu_model_name}")
             if not measuring and (refusal := _room_after_release(_vram_needed_mib(engine, model, quality))):
                 raise GpuUnavailable(refusal)  # decided before the loaded model is let go
-            _kill_gpu_worker()
+            if still_running := _kill_gpu_worker():
+                raise GpuUnavailable(still_running)
             alive = False
         if not alive:
             refusal = _start_gpu_worker(engine, model, quality, check_fit=not measuring)
@@ -803,9 +808,13 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
     # Wait for result (outside lock so CPU requests aren't blocked)
     try:
         result = _gpu_result_queue.get(timeout=_GPU_RESULT_TIMEOUT_S)
+        if "withdrawn" in result:
+            # The card was taken back for something else (GPU-Orc before a model load): to the plan this
+            # is "no GPU now", so device=auto goes on on the CPU and device=cuda answers 503 with the reason.
+            raise GpuUnavailable(f"the GPU was withdrawn: {result['withdrawn']}")
         _reset_gpu_ttl()
         return result
-    except Exception:
+    except queue.Empty:
         return {"error": f"GPU worker timeout ({_GPU_RESULT_TIMEOUT_S}s)"}
     finally:
         _gpu_busy = False
@@ -831,7 +840,7 @@ def _decode_to_wav16k(src_path: str) -> str:
         proc = subprocess.run(
             ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", src_path,
              "-ar", "16000", "-ac", "1", "-f", "wav", "-y", wav_path],
-            capture_output=True, text=True, timeout=1800,
+            capture_output=True, text=True, timeout=1800, check=False,  # the return code is read below
         )
         if proc.returncode == 0 and Path(wav_path).exists():
             size_mb = Path(wav_path).stat().st_size / 1024 / 1024
@@ -841,7 +850,7 @@ def _decode_to_wav16k(src_path: str) -> str:
             return wav_path
         print(f"[STT] ffmpeg pre-decode FAILED (rc={proc.returncode}): "
               f"{proc.stderr[:200]} — engines will decode separately", flush=True)
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError) as e:
         print(f"[STT] ffmpeg pre-decode FAILED: {e} — engines will decode separately",
               flush=True)
     return src_path
@@ -867,7 +876,9 @@ def _measure(engine: str, model: str, wav_path: str, language: str) -> dict:
     quality = model if engine == "parakeet" else _config["gpu_quality"]
     whisper_size = _config["gpu_model"] if engine == "parakeet" else model
     with _gpu_lock:
-        _kill_gpu_worker()  # a loaded model would be part of the starting point
+        # A loaded model would be part of the starting point.
+        if still_running := _kill_gpu_worker():
+            raise RuntimeError(f"cannot measure: {still_running}")
     time.sleep(2)  # the card has let go of its memory
     before = _used_per_card_mib()
     peaks = dict(before)
@@ -912,7 +923,7 @@ def _burn_in_job(wav_path: str, entries: list[tuple[str, str]], language: str) -
             _save_measured(engine, model, result["measured_mib"])
             _burn_in["results"].append(result)
             print(f"[Burn-in] {engine} {model}: {result['measured_mib']} MiB on card {result['card']}", flush=True)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 — the burn-in shows any failure on its page instead of dying
         _burn_in["error"] = str(error)
         print(f"[Burn-in] failed: {error}", flush=True)
     finally:
@@ -938,6 +949,7 @@ _diarize_lock = threading.Lock()
 _diarize_ttl_timer: threading.Timer | None = None
 _diarize_device_index: int | None = None
 _diarize_uuid: str = ""  # UUID of the card the diarization worker sits on
+_diarize_busy = False  # True between a submitted job and its collected result
 
 
 def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Queue,
@@ -987,7 +999,7 @@ def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing
     while True:
         try:
             job = req_queue.get(timeout=10)
-        except Exception:
+        except queue.Empty:
             continue
         if job is None:
             break
@@ -1015,7 +1027,7 @@ def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing
                   f"({elapsed:.1f}s)", flush=True)
             res_queue.put({"turns": turns, "speakers": speakers,
                            "time": round(elapsed, 3)})
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a failed job is the caller's answer, the worker goes on
             res_queue.put({"error": str(e)})
 
     print(f"[Diarize] Worker exiting (PID {os.getpid()})", flush=True)
@@ -1063,37 +1075,37 @@ def _choose_card_and_spawn_diarize_worker() -> bool:
             print(f"[Diarize] Worker ready on GPU {gpu_idx}", flush=True)
             return True
         print(f"[Diarize] Worker failed: {msg.get('error')}", flush=True)
-    except Exception:
+    except queue.Empty:
         print("[Diarize] Worker failed to start (timeout)", flush=True)
 
     _kill_diarize_worker()
     return False
 
 
-def _kill_diarize_worker():
-    """Kill the diarization process to release its VRAM."""
+def _kill_diarize_worker(withdrawn: str = "") -> str:
+    """End the diarization process to release its VRAM; returns what still runs ("" when proven gone).
+    A job in flight gets ``withdrawn`` as its error, so the transcript comes without speakers."""
     global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index, _diarize_uuid
 
     if _diarize_process is not None:
-        print(f"[Diarize] Killing worker (PID {_diarize_process.pid}, "
-              f"GPU {_diarize_device_index})", flush=True)
-        try:
-            _diarize_process.kill()
-            _diarize_process.join(timeout=5)
-        except Exception:
-            pass
+        print(f"[Diarize] Ending worker (PID {_diarize_process.pid}, GPU {_diarize_device_index})", flush=True)
+        still_running = _end_worker(_diarize_process, "diarization worker")
+        if still_running:
+            return still_running
         _diarize_process = None
 
-    for q in (_diarize_request_queue, _diarize_result_queue):
-        if q is not None:
-            try:
-                q.close()
-            except Exception:
-                pass
+    if _diarize_request_queue is not None:
+        _diarize_request_queue.close()
+    if _diarize_result_queue is not None:
+        if _diarize_busy:
+            _diarize_result_queue.put({"error": f"diarization withdrawn: {withdrawn or 'the worker was ended'}"})
+        else:
+            _diarize_result_queue.close()
     _diarize_request_queue = None
     _diarize_result_queue = None
     _diarize_device_index = None
     _diarize_uuid = ""
+    return ""
 
 
 def _reset_diarize_ttl():
@@ -1111,25 +1123,31 @@ def _reset_diarize_ttl():
 def _diarize_submit(audio_path: str, num_speakers: int = 0) -> bool:
     """Queue a diarization job — returns immediately so Whisper can run in
     parallel on its own card. Result is picked up by _diarize_collect()."""
+    global _diarize_busy
     with _diarize_lock:
-        if _diarize_process is None or not _diarize_process.is_alive():
-            if not _start_diarize_worker():
-                return False
+        if (_diarize_process is None or not _diarize_process.is_alive()) and not _start_diarize_worker():
+            return False
         _diarize_request_queue.put({"audio_path": audio_path,
                                     "num_speakers": num_speakers})
+        _diarize_busy = True
     return True
 
 
 def _diarize_collect(timeout: int) -> dict | None:
     """Wait for the queued diarization result."""
-    if _diarize_result_queue is None:
+    global _diarize_busy
+    results = _diarize_result_queue
+    if results is None:
+        _diarize_busy = False
         return None
     try:
-        result = _diarize_result_queue.get(timeout=timeout)
+        result = results.get(timeout=timeout)
         _reset_diarize_ttl()
         return result
-    except Exception:
+    except queue.Empty:
         return {"error": f"Diarization timeout ({timeout}s)"}
+    finally:
+        _diarize_busy = False
 
 
 def _smooth_speakers(merged: list, min_run: int = 2) -> list:
@@ -1583,42 +1601,91 @@ def burn_in_start():
 
 @app.route("/unload", methods=["POST"])
 def unload():
-    """Unload model(s). Query param device: cpu, gpu, cuda, or all (default)."""
+    """Unload the CPU models. The GPU workers are released through /gpu/release only (one way)."""
     global _model_cpu, _parakeet_cpu, _parakeet_cpu_quality
-    device = request.args.get("device", "all")
+    if request.args:
+        return jsonify({"error": "/unload takes no parameters; GPU workers: POST /gpu/release"}), 400
     unloaded = []
-    _log_client("unload", device=device, force=request.args.get("force", "0"))
-
-    if device in ("gpu", "cuda", "all"):
-        # A transcription in flight is not killed silently — callers get a
-        # 409 and may retry (or pass force=1 to kill regardless, e.g. after
-        # a patience deadline before an LLM cold start).
-        if _gpu_busy and request.args.get("force") != "1":
-            return jsonify({"success": False, "busy": True}), 409
-        # Report "gpu" only when a worker was actually alive — callers use
-        # this to log an honest "released before model load" message.
-        gpu_was_alive = _gpu_process is not None and _gpu_process.is_alive()
-        _kill_gpu_worker()
-        if gpu_was_alive:
-            unloaded.append("gpu")
-        # The diarization worker sits on a second card and would otherwise
-        # keep computing for a caller that is already gone (e.g. AIfred was
-        # restarted mid-transcription) — free it in the same sweep.
-        diarize_was_alive = _diarize_process is not None and _diarize_process.is_alive()
-        _kill_diarize_worker()
-        if diarize_was_alive:
-            unloaded.append("diarize")
-    if device in ("cpu", "all") and _model_cpu is not None:
+    _log_client("unload")
+    if _model_cpu is not None:
         _model_cpu = None
         gc.collect()
         unloaded.append("cpu")
-    if device in ("cpu", "all") and _parakeet_cpu is not None:
+    if _parakeet_cpu is not None:
         _parakeet_cpu = None
         _parakeet_cpu_quality = ""
         gc.collect()
         unloaded.append("parakeet-cpu")
 
     return jsonify({"success": True, "unloaded": unloaded})
+
+
+# The suites' common GPU release API (also TTS-Suite; GPU-Orc uses it): what the service holds on the
+# GPUs of this machine, and releasing it. Released means the worker process is proven ended.
+_GPU_ITEMS = ("gpu-worker", "diarize-worker")
+
+
+@app.route("/gpu/holders", methods=["GET"])
+def gpu_holders():
+    """The GPU workers that run, with the card each was started on (from its configuration, always
+    known), the memory the GPU worker took when loading, and whether it works right now."""
+    holders = []
+    if _gpu_process is not None and _gpu_process.is_alive():
+        holders.append({
+            "item": "gpu-worker",
+            "gpu_uuids": [_gpu_uuid],
+            "memory_mib": {_gpu_uuid: _gpu_footprint_mib} if _gpu_footprint_mib else None,
+            "busy": _gpu_busy,
+        })
+    if _diarize_process is not None and _diarize_process.is_alive():
+        holders.append({"item": "diarize-worker", "gpu_uuids": [_diarize_uuid], "memory_mib": None,
+                        "busy": _diarize_busy})
+    return jsonify({"holders": holders})
+
+
+@app.route("/gpu/release", methods=["POST"])
+def gpu_release():
+    """Release GPU workers: ``{"items": [...] | "all", "force": bool, "reason": str}``.
+
+    One result per item: ``released`` (the worker process is proven ended), ``not_running``, ``busy``
+    (working and left alone, only without force) or ``failed`` (the end could not be proven). HTTP 200
+    when everything is released or was not running, 409 when an item is busy, 500 when one failed.
+    With force a transcription in flight is told the reason and counts as "GPU unavailable".
+    """
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or set(body) - {"items", "force", "reason"}:
+        return jsonify({"error": "body: {items, force, reason}"}), 400
+    items, force, reason = body.get("items"), body.get("force", False), body.get("reason")
+    if items == "all":
+        items = list(_GPU_ITEMS)
+    if (not isinstance(items, list) or not items or len(set(items)) != len(items)
+            or any(item not in _GPU_ITEMS for item in items)):
+        return jsonify({"error": f'items: "all" or a list of {list(_GPU_ITEMS)}'}), 400
+    if not isinstance(force, bool) or not isinstance(reason, str) or not reason.strip():
+        return jsonify({"error": "force must be true or false, and reason is required"}), 400
+    _log_client("gpu/release", items=",".join(items), force=str(force), reason=reason)
+    results = [_release_gpu_item(item, force, reason) for item in items]
+    outcomes = {result["outcome"] for result in results}
+    status = 500 if "failed" in outcomes else 409 if "busy" in outcomes else 200
+    return jsonify({"results": results}), status
+
+
+def _release_gpu_item(item: str, force: bool, reason: str) -> dict:
+    if item == "gpu-worker":
+        lock, kill = _gpu_lock, _kill_gpu_worker
+    else:
+        lock, kill = _diarize_lock, _kill_diarize_worker
+    with lock:
+        process = _gpu_process if item == "gpu-worker" else _diarize_process
+        busy = _gpu_busy if item == "gpu-worker" else _diarize_busy
+        if process is None or not process.is_alive():
+            return {"item": item, "outcome": "not_running", "detail": "nothing runs"}
+        if busy and not force:
+            return {"item": item, "outcome": "busy", "detail": "a job is running on it"}
+        still_running = kill(withdrawn=reason)
+    if still_running:
+        return {"item": item, "outcome": "failed", "detail": still_running}
+    return {"item": item, "outcome": "released", "detail": f"PID {process.pid} ended"}
 
 
 # The settings that name one of a fixed set of values, and the set.

@@ -75,7 +75,9 @@ and survive rebuilds. The container restarts with Docker (`restart: unless-stopp
 | GET | `/health` | Readiness: `status`, `model_loaded`, loaded models per device |
 | GET | `/status` | Detailed status and the full runtime configuration |
 | GET/POST | `/config` | Read or change the runtime configuration (JSON) |
-| POST | `/unload?device=cpu\|gpu\|cuda\|all` | Unload models; `409` while a GPU transcription runs, `force=1` kills it anyway |
+| POST | `/unload` | Unload the CPU models (the GPU workers: `/gpu/release`) |
+| GET | `/gpu/holders` | The GPU workers that run: `item`, `gpu_uuids` (the card it was started on), `memory_mib` (what the GPU worker took when loading), `busy` |
+| POST | `/gpu/release` | JSON `{"items": ["gpu-worker", "diarize-worker"] \| "all", "force": false, "reason": "…"}`. One result per item: `released` (the process is proven ended), `not_running`, `busy` (left alone without force), `failed`. `200`, `409` when one is busy, `500` when one failed. With `force` a running transcription is told the reason and counts as "GPU unavailable": with `device=auto` it goes on on the CPU, with `device=cuda` it answers `503` with the reason. The common release API of the suites, used by [GPU-Orc](https://github.com/Peuqui/GPU-Orc) |
 | POST, GET | `/burn-in` | `POST` (form: `file`, optional `entries`, a JSON list of `{"engine", "model"}`) starts the measurement of the VRAM models need, in the background; `GET` shows how it stands (`running`, `step`, `results`, `error`). `409` while one runs or the GPU transcribes |
 | GET | `/`, `/ui/` | Web page: status, configuration, test |
 

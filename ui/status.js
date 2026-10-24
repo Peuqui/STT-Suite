@@ -25,16 +25,29 @@ export function statusView({ show, fail }) {
     } catch (error) { fail(error) }
   }
 
-  async function unload(device, force = false) {
+  async function releaseGpu(force = false) {
     try {
-      const { unloaded } = await service.unload(device, force)
+      const { results } = await service.releaseGpu(force)
       offerForce = false
-      show(unloaded.length === 0 ? t('nothingLoaded') : t('unloaded', { what: unloaded.join(', ') }))
+      const released = results.filter((result) => result.outcome === 'released').map((result) => result.item)
+      show(released.length === 0 ? t('nothingLoaded') : t('unloaded', { what: released.join(', ') }))
     } catch (error) {
       if (!(error instanceof ApiError && error.busy)) return fail(error)
       offerForce = true
       show(t('gpuBusy'))
     }
+  }
+
+  async function unloadCpu() {
+    try {
+      const { unloaded } = await service.unloadCpu()
+      show(unloaded.length === 0 ? t('nothingLoaded') : t('unloaded', { what: unloaded.join(', ') }))
+    } catch (error) { fail(error) }
+  }
+
+  // One button may release on both sides; the page is read again afterwards.
+  async function release(...steps) {
+    for (const step of steps) await step()
     await load()
   }
 
@@ -74,10 +87,10 @@ export function statusView({ show, fail }) {
       h('p', { class: 'muted' }, t('statusHint')),
       h('div', { class: 'row' },
         h('button', { onclick: load }, t('reload')),
-        h('button', { onclick: () => unload('gpu'), disabled: !gpu.loaded }, t('unloadGpu')),
-        h('button', { onclick: () => unload('cpu'), disabled: !cpu.loaded }, t('unloadCpu')),
-        h('button', { onclick: () => unload('all') }, t('unloadAll')),
-        offerForce ? h('button', { class: 'primary', onclick: () => unload('gpu', true) }, t('force')) : null),
+        h('button', { onclick: () => release(() => releaseGpu()), disabled: !gpu.loaded }, t('unloadGpu')),
+        h('button', { onclick: () => release(unloadCpu), disabled: !cpu.loaded }, t('unloadCpu')),
+        h('button', { onclick: () => release(() => releaseGpu(), unloadCpu) }, t('unloadAll')),
+        offerForce ? h('button', { class: 'primary', onclick: () => release(() => releaseGpu(true)) }, t('force')) : null),
       cardTable([t('device'), t('configured'), t('engine'), t('model'), t('state'), t('details')],
         rows.map(([name, row]) => [t(name), configured(name), row.engine ?? '', row.model ?? '', stateOf(row), row.details ?? ''])),
     )

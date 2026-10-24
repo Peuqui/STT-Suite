@@ -75,7 +75,9 @@ Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `stt_sui
 | GET | `/health` | Bereitschaft: `status`, `model_loaded`, geladene Modelle je Gerät |
 | GET | `/status` | Ausführlicher Status und die vollständige Laufzeit-Konfiguration |
 | GET/POST | `/config` | Laufzeit-Konfiguration lesen oder ändern (JSON) |
-| POST | `/unload?device=cpu\|gpu\|cuda\|all` | Modelle entladen; `409`, solange eine GPU-Transkription läuft, `force=1` beendet sie trotzdem |
+| POST | `/unload` | Die CPU-Modelle entladen (die GPU-Worker: `/gpu/release`) |
+| GET | `/gpu/holders` | Die GPU-Worker, die laufen: `item`, `gpu_uuids` (die Karte, auf der er gestartet wurde), `memory_mib` (was der GPU-Worker beim Laden belegt hat), `busy` |
+| POST | `/gpu/release` | JSON `{"items": ["gpu-worker", "diarize-worker"] \| "all", "force": false, "reason": "…"}`. Ein Ergebnis je Element: `released` (der Prozess ist nachweislich beendet), `not_running`, `busy` (ohne force in Ruhe gelassen), `failed`. `200`, `409` wenn eines beschäftigt ist, `500` wenn eines gescheitert ist. Mit `force` erfährt eine laufende Transkription den Grund und gilt als „GPU nicht verfügbar“: mit `device=auto` läuft sie auf der CPU weiter, mit `device=cuda` antwortet sie `503` mit dem Grund. Die gemeinsame Freigabe-Schnittstelle der Suiten, genutzt von [GPU-Orc](https://github.com/Peuqui/GPU-Orc) |
 | POST, GET | `/burn-in` | `POST` (Formular: `file`, optional `entries`, eine JSON-Liste aus `{"engine", "model"}`) startet im Hintergrund die Messung des VRAM-Bedarfs der Modelle; `GET` zeigt den Stand (`running`, `step`, `results`, `error`). `409`, solange eine läuft oder die GPU transkribiert |
 | GET | `/`, `/ui/` | Webseite: Zustand, Konfiguration, Probe |
 
