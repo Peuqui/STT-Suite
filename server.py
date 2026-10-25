@@ -763,6 +763,11 @@ class GpuUnavailable(Exception):
     """The GPU cannot take this model now: no card has room, or the worker is busy with another one."""
 
 
+class GpuWithdrawn(GpuUnavailable):
+    """The card was taken back during the transcription (GPU-Orc before a model load): this request
+    gets no GPU any more, not even with another model."""
+
+
 def _model_name(engine: str, model: str, quality: str) -> str:
     """How a loaded model is named: a Whisper size, or "parakeet-<precision>"."""
     return f"parakeet-{quality}" if engine == "parakeet" else model
@@ -811,7 +816,7 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
         if "withdrawn" in result:
             # The card was taken back for something else (GPU-Orc before a model load): to the plan this
             # is "no GPU now", so device=auto goes on on the CPU and device=cuda answers 503 with the reason.
-            raise GpuUnavailable(f"the GPU was withdrawn: {result['withdrawn']}")
+            raise GpuWithdrawn(f"the GPU was withdrawn: {result['withdrawn']}")
         _reset_gpu_ttl()
         return result
     except queue.Empty:
@@ -1391,12 +1396,18 @@ def _run_plan(plan: list[dict], work_path: str, language: str, segments: bool) -
     Raises :class:`GpuUnavailable` when no candidate could (a single GPU candidate, or a list
     that does not end with the CPU)."""
     skipped: list[dict] = []
-    for index, candidate in enumerate(plan):
+    remaining = list(plan)
+    while remaining:
+        candidate = remaining.pop(0)
         try:
             return _run_candidate(candidate, work_path, language, segments), skipped
         except GpuUnavailable as unavailable:
             skipped.append({"tried": _label(candidate), "reason": str(unavailable)})
-            following = f" — next: {_label(plan[index + 1])}" if index + 1 < len(plan) else ""
+            if isinstance(unavailable, GpuWithdrawn):
+                # Another GPU model would take the card straight back from whoever freed it.
+                skipped += [{"tried": _label(c), "reason": str(unavailable)} for c in remaining if c["device"] == "cuda"]
+                remaining = [c for c in remaining if c["device"] != "cuda"]
+            following = f" — next: {_label(remaining[0])}" if remaining else ""
             print(f"[STT] {_label(candidate)} not possible ({unavailable}){following}", flush=True)
     raise GpuUnavailable("; ".join(f"{entry['tried']}: {entry['reason']}" for entry in skipped))
 

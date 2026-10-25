@@ -144,6 +144,46 @@ def test_a_withdrawn_gpu_counts_as_unavailable_so_auto_goes_on_on_the_cpu(monkey
     monkeypatch.setattr(server, "_gpu_model_name", "large-v3")
     monkeypatch.setattr(server, "_gpu_request_queue", FakeQueue())
     monkeypatch.setattr(server, "_gpu_result_queue", AnsweringQueue({"withdrawn": "GPU-Orc: loading X"}))
-    with pytest.raises(server.GpuUnavailable, match="withdrawn: GPU-Orc: loading X"):
+    with pytest.raises(server.GpuWithdrawn, match="withdrawn: GPU-Orc: loading X"):
         server._transcribe_gpu("audio.wav", "de", False, "whisper", "large-v3", "fp32")
     assert server._gpu_busy is False
+
+
+def test_after_a_withdrawal_auto_skips_the_other_gpu_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Found live (25.10.): after the release, auto took the next cuda entry and loaded a new worker on the freed card.
+    plan = [
+        {"device": "cuda", "engine": "parakeet", "model": "medium", "quality": "fp32"},
+        {"device": "cuda", "engine": "whisper", "model": "medium", "quality": "float16"},
+        {"device": "cpu", "engine": "parakeet", "model": "medium", "quality": "fp32"},
+    ]
+    tried: list[str] = []
+
+    def run(candidate: dict[str, Any], *_: Any) -> dict[str, Any]:
+        tried.append(server._label(candidate))
+        if candidate["device"] == "cuda":
+            raise server.GpuWithdrawn("the GPU was withdrawn: GPU-Orc: loading X")
+        return {"text": "ok"}
+
+    monkeypatch.setattr(server, "_run_candidate", run)
+    result, skipped = server._run_plan(plan, "audio.wav", "de", False)
+    assert tried == ["cuda parakeet fp32", "cpu parakeet fp32"]
+    assert result == {"text": "ok"}
+    assert [entry["tried"] for entry in skipped] == ["cuda parakeet fp32", "cuda whisper medium"]
+
+
+def test_without_room_auto_still_tries_the_next_gpu_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = [
+        {"device": "cuda", "engine": "whisper", "model": "large-v3", "quality": "float16"},
+        {"device": "cuda", "engine": "whisper", "model": "medium", "quality": "float16"},
+    ]
+    tried: list[str] = []
+
+    def run(candidate: dict[str, Any], *_: Any) -> dict[str, Any]:
+        tried.append(server._label(candidate))
+        if candidate["model"] == "large-v3":
+            raise server.GpuUnavailable("no card has room")
+        return {"text": "ok"}
+
+    monkeypatch.setattr(server, "_run_candidate", run)
+    assert server._run_plan(plan, "audio.wav", "de", False)[0] == {"text": "ok"}
+    assert tried == ["cuda whisper large-v3", "cuda whisper medium"]
