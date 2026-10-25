@@ -169,6 +169,12 @@ The service has no login, and `docker-compose.yml` publishes port 5080 on every 
 machine. Keep it behind a firewall, or publish it on the loopback address only
 (`"127.0.0.1:5080:5052"`) when only programs on the same machine use it.
 
+## Star History
+
+![Star History](https://raw.githubusercontent.com/Peuqui/Traffic/main/data/STT-Suite/star-history.svg)
+
+<sub>Recorded daily in [Peuqui/Traffic](https://github.com/Peuqui/Traffic), together with views and clones. GitHub restricted the stargazer API to repo admins on 2026-06-30, so external chart services now need a token with write access.</sub>
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE)

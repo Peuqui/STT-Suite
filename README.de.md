@@ -168,6 +168,12 @@ Der Dienst hat keine Anmeldung, und `docker-compose.yml` veröffentlicht Port 50
 des Rechners. Halte ihn hinter einer Firewall oder veröffentliche ihn nur auf der Loopback-Adresse
 (`"127.0.0.1:5080:5052"`), wenn nur Programme auf demselben Rechner ihn nutzen.
 
+## Star History
+
+![Star History](https://raw.githubusercontent.com/Peuqui/Traffic/main/data/STT-Suite/star-history.svg)
+
+<sub>Täglich erhoben in [Peuqui/Traffic](https://github.com/Peuqui/Traffic), zusammen mit Aufrufen und Klonen. GitHub hat die Stargazer-API am 30.06.2026 auf Repo-Admins beschränkt, deshalb brauchen externe Diagramm-Dienste jetzt ein Token mit Schreibrechten.</sub>
+
 ## Lizenz
 
 [PolyForm Noncommercial 1.0.0](LICENSE)
