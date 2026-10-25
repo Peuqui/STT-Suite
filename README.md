@@ -136,6 +136,7 @@ Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt 
 | `STT_CPU_ENGINE` / `STT_GPU_ENGINE` | `whisper` / `whisper` | Engine on the CPU / the GPU when a request names none: `whisper` or `parakeet` |
 | `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet precision on the CPU / the GPU when a request names none: `fp32` or `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet cuts audio at speech pauses into chunks of at most this length, merging pauses shorter than this |
+| `PARAKEET_BATCH` | `1` | How many chunks Parakeet recognizes at once. At 1 a long recording needs no more VRAM than one chunk, and the burn-in (with a recording of at least `PARAKEET_CHUNK_S`) measures exactly that bound; above 1 the need grows with the length, up to that multiple |
 | `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision: estimates, replaced by what a burn-in measured |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Where the measured needs are kept (volume `stt_suite_state`); delete it to return to the estimates |
 | `STT_VRAM_MARGIN_MIB` | `256` | Free VRAM kept on a card beyond what a model needs; also set on the web page |

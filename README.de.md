@@ -134,6 +134,7 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `STT_CPU_ENGINE` / `STT_GPU_ENGINE` | `whisper` / `whisper` | Engine auf CPU / GPU, wenn eine Anfrage keine nennt: `whisper` oder `parakeet` |
 | `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet-Genauigkeit auf CPU / GPU, wenn eine Anfrage keine nennt: `fp32` oder `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet schneidet das Audio an Sprechpausen in Stücke von höchstens dieser Länge und fasst kürzere Pausen zusammen |
+| `PARAKEET_BATCH` | `1` | So viele Stücke erkennt Parakeet auf einmal. Bei 1 braucht eine lange Aufnahme nicht mehr VRAM als ein Stück, und der Burn-in (mit einer Aufnahme von mindestens `PARAKEET_CHUNK_S`) misst genau diese Grenze; bei mehr wächst der Bedarf mit der Länge bis zum Vielfachen |
 | `STT_VRAM_FILE` | `vram_mib.json` | Freier VRAM (MiB), den eine Karte braucht, bevor ein Modell darauf geladen wird, je Whisper-Größe und Parakeet-Genauigkeit: Schätzwerte, ersetzt durch das, was ein Burn-in gemessen hat |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Wo die gemessenen Werte liegen (Volume `stt_suite_state`); löschen, um zu den Schätzwerten zurückzukehren |
 | `STT_VRAM_MARGIN_MIB` | `256` | Freier VRAM, der auf einer Karte über den Bedarf eines Modells hinaus bleibt; auch auf der Webseite einstellbar |

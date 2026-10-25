@@ -291,6 +291,11 @@ _PARAKEET_DIR = Path(os.environ.get("PARAKEET_DIR", "/root/.cache/huggingface/pa
 # than PARAKEET_MERGE_SILENCE_MS are merged up to the chunk length.
 _PARAKEET_CHUNK_S = float(os.environ.get("PARAKEET_CHUNK_S", "60"))
 _PARAKEET_MERGE_SILENCE_MS = float(os.environ.get("PARAKEET_MERGE_SILENCE_MS", "5000"))
+# Chunks recognized at once. onnx_asr batches 8 by default: a long recording then held up to eight
+# chunks on the card while the burn-in (one chunk) measured a single one, and a 10-min file ran out
+# of VRAM on a card the placement had judged big enough (25.10.2026). One chunk at a time keeps VRAM
+# at what the burn-in measures, whatever the length.
+_PARAKEET_BATCH = int(os.environ.get("PARAKEET_BATCH", "1"))
 _parakeet_download_lock = threading.Lock()
 
 
@@ -321,7 +326,7 @@ def _load_parakeet(quality: str, provider: str):
         raise RuntimeError(f"Parakeet runs on {active}, not {provider}")
     vad = onnx_asr.load_vad("silero", providers=["CPUExecutionProvider"])
     print(f"[Parakeet] Loaded {quality} on {provider} in {time.time() - t0:.1f}s", flush=True)
-    return model.with_vad(vad, max_speech_duration_s=_PARAKEET_CHUNK_S,
+    return model.with_vad(vad, batch_size=_PARAKEET_BATCH, max_speech_duration_s=_PARAKEET_CHUNK_S,
                           min_silence_duration_ms=_PARAKEET_MERGE_SILENCE_MS).with_timestamps()
 
 
