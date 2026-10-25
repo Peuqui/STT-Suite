@@ -122,3 +122,49 @@ def test_both_workers_drop_the_inherited_lock_before_anything_else(worker: str, 
     monkeypatch.setattr(server, "_drop_inherited_placement_lock", drop)
     with pytest.raises(_Dropped):
         getattr(server, worker)(None, None, 0, "GPU-x", "model", "")
+
+
+class _GpuOrc:
+    """GPU-Orc's GET /status for the placement: available_mib per card UUID; records the requests."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, available: dict[str, Any], token_file: str = "",
+                 errors: list[dict[str, str]] | None = None) -> None:
+        import io
+        import json
+        import urllib.request
+        self.requests: list[Any] = []
+        body = json.dumps({"gpus": [{"uuid": uuid, "available_mib": mib} for uuid, mib in available.items()],
+                           "errors": errors or []}).encode()
+
+        def urlopen(request: Any, timeout: float) -> io.BytesIO:
+            self.requests.append(request)
+            return io.BytesIO(body)
+
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        monkeypatch.setattr(server, "_GPU_ORC_URL", "http://host.docker.internal:5070")
+        monkeypatch.setattr(server, "_GPU_ORC_TOKEN_FILE", token_file)
+
+
+def test_with_gpu_orc_a_vllm_models_share_is_not_free(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    token = tmp_path / "token"
+    token.write_text("secret\n")
+    _nvidia_smi(monkeypatch, (0, 9800, 39000, 7.5), (1, 1100, 31600, 7.0))
+    orc = _GpuOrc(monkeypatch, {"GPU-0": 2458, "GPU-1": 1100}, token_file=str(token))
+    assert server._find_best_gpu(min_vram_mib=3968) is None             # nvidia-smi alone would take GPU 0
+    assert server._find_best_gpu(min_vram_mib=2000) == (0, "GPU-0")
+    assert orc.requests[0].full_url == "http://host.docker.internal:5070/status"
+    assert orc.requests[0].get_header("Authorization") == "Bearer secret"
+
+
+def test_a_gpu_orc_that_cannot_say_lets_the_gpu_take_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _nvidia_smi(monkeypatch, (0, 40000, 0, 7.5))
+    _GpuOrc(monkeypatch, {"GPU-0": None}, errors=[{"consumer": "tts-suite", "detail": "down"}])
+    assert server._find_best_gpu(min_vram_mib=1000) is None
+    assert "GPU-Orc cannot say what is free" in server._no_room(1000)
+
+
+def test_the_free_vram_per_card_is_capped_by_gpu_orc(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(
+        args, 0, "0, GPU-0, 9800\n1, GPU-1, 30000\n", ""))
+    _GpuOrc(monkeypatch, {"GPU-0": 2458, "GPU-1": 31000})
+    assert server._free_per_card_mib() == {0: 2458, 1: 30000}
