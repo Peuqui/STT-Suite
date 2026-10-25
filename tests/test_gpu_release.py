@@ -79,6 +79,20 @@ def test_holders_name_the_card_the_memory_and_whether_it_works(client: Any, monk
     ]}
 
 
+def test_needs_name_every_model_its_need_whether_measured_and_the_gpu_default(client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "_VRAM_MIB", {"parakeet": {"fp32": 3712, "int8": 1030}, "whisper": {"large-v3": 4200}})
+    monkeypatch.setattr(server, "_VRAM_MEASURED", {"parakeet": {"fp32": 3712}})
+    monkeypatch.setitem(server._config, "gpu_engine", "parakeet")
+    monkeypatch.setitem(server._config, "gpu_quality", "fp32")
+    monkeypatch.setattr(server, "_DIARIZE_MIN_VRAM_MIB", 1500)
+    assert client.get("/gpu/needs").get_json() == {"needs": [
+        {"item": "parakeet-fp32", "need_mib": 3712, "source": "measured", "default": True},
+        {"item": "parakeet-int8", "need_mib": 1030, "source": "estimate", "default": False},
+        {"item": "whisper-large-v3", "need_mib": 4200, "source": "estimate", "default": False},
+        {"item": "diarize", "need_mib": 1500, "source": "estimate", "default": False},
+    ]}
+
+
 def test_nothing_running(client: Any) -> None:
     assert release(client) == (200, [("gpu-worker", "not_running"), ("diarize-worker", "not_running")])
 

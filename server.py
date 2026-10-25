@@ -1723,6 +1723,23 @@ def gpu_holders():
     return jsonify({"holders": holders})
 
 
+@app.route("/gpu/needs", methods=["GET"])
+def gpu_needs():
+    """What each model needs on a card, for GPU-Orc's plan: the bare need without this service's own
+    margin, ``source`` ``measured`` (burn-in) or ``estimate``; ``default`` marks the model the GPU loads
+    when a request names none. The diarization worker needs at least its floor (an estimate)."""
+    default = (f"parakeet-{_config['gpu_quality']}" if _config["gpu_engine"] == "parakeet"
+               else f"whisper-{_config['gpu_model']}")
+    needs = []
+    for engine in sorted(_VRAM_MIB):
+        for model in sorted(_VRAM_MIB[engine]):
+            item = f"{engine}-{model}"
+            source = "measured" if model in _VRAM_MEASURED.get(engine, {}) else "estimate"
+            needs.append({"item": item, "need_mib": _VRAM_MIB[engine][model], "source": source, "default": item == default})
+    needs.append({"item": "diarize", "need_mib": _DIARIZE_MIN_VRAM_MIB, "source": "estimate", "default": False})
+    return jsonify({"needs": needs})
+
+
 @app.route("/gpu/release", methods=["POST"])
 def gpu_release():
     """Release GPU workers: ``{"items": [...] | "all", "force": bool, "reason": str}``.
