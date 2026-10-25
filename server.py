@@ -392,17 +392,33 @@ _gpu_lock = threading.Lock()
 # until its model sits in VRAM, so the next one sees the real free memory instead of choosing the same
 # card at the same moment. Unset = no other program to coordinate with.
 _PLACEMENT_LOCK_FILE = os.environ.get("STT_GPU_PLACEMENT_LOCK", "")
+# Descriptor of the lock file while this process holds the lock. A worker forked inside the lock inherits a copy,
+# and flock holds the lock while any copy is open: the worker closes its copy first (_drop_inherited_placement_lock).
+_held_placement_lock: int | None = None
 
 
 @contextlib.contextmanager
 def _placement_lock():
     """Choosing a card and loading the model onto it, one program at a time across the machine."""
+    global _held_placement_lock
     if not _PLACEMENT_LOCK_FILE:
         yield
         return
     with open(_PLACEMENT_LOCK_FILE, "a") as lock_file:  # closing the file (or dying) releases the lock
         fcntl.flock(lock_file, fcntl.LOCK_EX)
-        yield
+        _held_placement_lock = lock_file.fileno()
+        try:
+            yield
+        finally:
+            _held_placement_lock = None
+
+
+def _drop_inherited_placement_lock() -> None:
+    """In a worker started inside the lock: close the inherited copy of the lock's descriptor. Otherwise the
+    worker would hold the lock for its whole life (found 25.10.: the TTS-Suite could not start an engine
+    while the STT GPU worker lived)."""
+    if _held_placement_lock is not None:
+        os.close(_held_placement_lock)
 _gpu_ttl_timer: threading.Timer | None = None
 _last_gpu_request = 0.0
 _gpu_device_index: int | None = None
@@ -497,6 +513,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
                 gpu_idx: int, gpu_uuid: str, model_name: str, compute: str,
                 engine: str = "whisper", quality: str = "fp32"):
     """Child process: load model on GPU, process requests until killed."""
+    _drop_inherited_placement_lock()
     # Pin by UUID (SSOT, same as llama-swap profiles) — immune to CUDA's
     # enumeration order, which differs from nvidia-smi on mixed-GPU hosts.
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_uuid
@@ -960,6 +977,7 @@ _diarize_busy = False  # True between a submitted job and its collected result
 def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Queue,
                     gpu_idx: int, gpu_uuid: str, model_name: str, hf_token: str):
     """Child process: load the pyannote pipeline on its own GPU."""
+    _drop_inherited_placement_lock()
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_uuid
     print(f"[Diarize] Worker started on GPU {gpu_idx} ({gpu_uuid}, PID {os.getpid()})", flush=True)
 

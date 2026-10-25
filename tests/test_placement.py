@@ -1,9 +1,11 @@
 """Card choice of the GPU workers: unused card first, then the most free VRAM; and the lock shared with the TTS-Suite."""
 import fcntl
+import multiprocessing
 import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -78,3 +80,45 @@ def test_the_second_program_waits_for_the_first_to_let_go_of_the_lock(
         assert not entered.is_set()
     waiter.join(timeout=5)
     assert entered.is_set()
+
+
+# ---- The shared placement lock and forked workers ----------------------------------------
+
+
+def _like_a_worker(ready: Any, stop: Any) -> None:
+    server._drop_inherited_placement_lock()
+    ready.set()
+    stop.wait(10)
+
+
+def test_a_worker_forked_inside_the_placement_lock_does_not_keep_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Found 25.10.: the STT GPU worker kept the lock for its whole life, the TTS-Suite could not start an engine.
+    lock = tmp_path / "placement.lock"
+    monkeypatch.setattr(server, "_PLACEMENT_LOCK_FILE", str(lock))
+    fork = multiprocessing.get_context("fork")
+    ready, stop = fork.Event(), fork.Event()
+    with server._placement_lock():
+        worker = fork.Process(target=_like_a_worker, args=(ready, stop))
+        worker.start()
+        assert ready.wait(5)
+    try:
+        with open(lock, "a") as other:  # another program: gets the lock while the worker still lives
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert worker.is_alive()
+    finally:
+        stop.set()
+        worker.join(5)
+
+
+class _Dropped(Exception):
+    pass
+
+
+@pytest.mark.parametrize("worker", ["_gpu_worker", "_diarize_worker"])
+def test_both_workers_drop_the_inherited_lock_before_anything_else(worker: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    def drop() -> None:
+        raise _Dropped
+
+    monkeypatch.setattr(server, "_drop_inherited_placement_lock", drop)
+    with pytest.raises(_Dropped):
+        getattr(server, worker)(None, None, 0, "GPU-x", "model", "")
