@@ -71,12 +71,24 @@ def release(client: Any, **body: Any) -> tuple[int, list[tuple[str, str]]]:
 def test_holders_name_the_card_the_memory_and_whether_it_works(client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.get("/gpu/holders").get_json() == {"holders": []}
     gpu_worker(monkeypatch, busy=True)
+    monkeypatch.setattr(server, "_VRAM_MIB", {"parakeet": {"fp32": 3712}, "whisper": {"large-v3": 4200}})
+    monkeypatch.setattr(server, "_gpu_engine", "parakeet")
+    monkeypatch.setattr(server, "_gpu_model_name", "parakeet-fp32")
+    monkeypatch.setattr(server, "_gpu_quality", "fp32")
     monkeypatch.setattr(server, "_diarize_process", FakeProcess(4712))
     monkeypatch.setattr(server, "_diarize_uuid", "GPU-cccc")
+    monkeypatch.setattr(server, "_DIARIZE_MIN_VRAM_MIB", 1500)
     assert client.get("/gpu/holders").get_json() == {"holders": [
-        {"item": "gpu-worker", "gpu_uuids": ["GPU-bbbb"], "memory_mib": {"GPU-bbbb": 3100}, "busy": True},
-        {"item": "diarize-worker", "gpu_uuids": ["GPU-cccc"], "memory_mib": None, "busy": False},
+        {"item": "gpu-worker", "gpu_uuids": ["GPU-bbbb"], "memory_mib": {"GPU-bbbb": 3100}, "busy": True,
+         "need_mib": 3712},
+        {"item": "diarize-worker", "gpu_uuids": ["GPU-cccc"], "memory_mib": None, "busy": False, "need_mib": 1500},
     ]}
+    # A Whisper worker needs its size; one the table does not name has an unknown need.
+    monkeypatch.setattr(server, "_gpu_engine", "whisper")
+    monkeypatch.setattr(server, "_gpu_quality", "")
+    for model, need in (("large-v3", 4200), ("tiny", None)):
+        monkeypatch.setattr(server, "_gpu_model_name", model)
+        assert client.get("/gpu/holders").get_json()["holders"][0]["need_mib"] == need
 
 
 def test_needs_name_every_model_its_need_whether_measured_and_the_gpu_default(client: Any, monkeypatch: pytest.MonkeyPatch) -> None:

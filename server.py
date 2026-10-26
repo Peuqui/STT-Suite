@@ -202,6 +202,12 @@ def _gpu_orc_room() -> dict[str, int]:
     return room
 
 
+def _vram_need_mib(engine: str, model: str, quality: str) -> int | None:
+    """What this model needs on a card, without margin (a Whisper size or a Parakeet precision); None when the
+    table does not name it."""
+    return _VRAM_MIB.get(engine, {}).get(quality if engine == "parakeet" else model)
+
+
 def _vram_needed_mib(engine: str, model: str, quality: str) -> int:
     """Free VRAM a card needs for this model, with the margin: a Whisper size or a Parakeet precision."""
     return _VRAM_MIB[engine][quality if engine == "parakeet" else model] + _config["vram_margin_mib"]
@@ -1708,7 +1714,8 @@ _GPU_ITEMS = ("gpu-worker", "diarize-worker")
 @app.route("/gpu/holders", methods=["GET"])
 def gpu_holders():
     """The GPU workers that run, with the card each was started on (from its configuration, always
-    known), the memory the GPU worker took when loading, and whether it works right now."""
+    known), the memory the GPU worker took when loading, whether it works right now, and what it needs on
+    its card (the model it holds or loads, as in /gpu/needs; the diarization worker its floor)."""
     holders = []
     if _gpu_process is not None and _gpu_process.is_alive():
         holders.append({
@@ -1716,10 +1723,11 @@ def gpu_holders():
             "gpu_uuids": [_gpu_uuid],
             "memory_mib": {_gpu_uuid: _gpu_footprint_mib} if _gpu_footprint_mib else None,
             "busy": _gpu_busy,
+            "need_mib": _vram_need_mib(_gpu_engine, _gpu_model_name, _gpu_quality),
         })
     if _diarize_process is not None and _diarize_process.is_alive():
         holders.append({"item": "diarize-worker", "gpu_uuids": [_diarize_uuid], "memory_mib": None,
-                        "busy": _diarize_busy})
+                        "busy": _diarize_busy, "need_mib": _DIARIZE_MIN_VRAM_MIB})
     return jsonify({"holders": holders})
 
 
