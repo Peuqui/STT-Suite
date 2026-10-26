@@ -6,14 +6,13 @@ import { t } from './i18n.js'
 // How often the page asks for the progress of a running burn-in.
 const POLL_MS = 2000
 
-// What each model needs on a card: the table the service decides by, the margin kept on top, and the
-// burn-in that measures the real values on this machine.
+// What each model needs on a card: the table the service asks GPU-Orc with, and the burn-in that measures
+// the real values on this machine.
 export function vramView({ show, fail }) {
   const root = h('div')
   let config = null
   let burnIn = { running: false, step: '', results: [], error: null }
   let audio = null
-  let margin = 0
   let timer = null
   // The models to measure, as "engine model" keys; all of them at first.
   const chosen = new Set()
@@ -26,7 +25,6 @@ export function vramView({ show, fail }) {
   async function load() {
     try {
       config = await service.config()
-      margin = config.vram_margin_mib
       burnIn = await service.burnIn()
       if (chosen.size === 0) rows().forEach((row) => chosen.add(keyOf(row.engine, row.model)))
       render()
@@ -47,14 +45,6 @@ export function vramView({ show, fail }) {
         poll()
       } catch (error) { fail(error) }
     }, POLL_MS)
-  }
-
-  async function saveMargin() {
-    try {
-      await service.saveConfig({ vram_margin_mib: margin })
-      show(t('marginSaved'))
-      await load()
-    } catch (error) { fail(error) }
   }
 
   async function start() {
@@ -93,11 +83,6 @@ export function vramView({ show, fail }) {
     replaceChildren(root,
       h('h2', {}, t('tabVram')),
       h('p', { class: 'muted' }, t('vramHint')),
-      h('div', { class: 'row' },
-        h('label', {}, t('margin')),
-        h('input', { type: 'number', value: margin, onchange: (event) => (margin = Number(event.target.value)) }),
-        h('button', { onclick: saveMargin }, t('save'))),
-      h('p', { class: 'muted' }, t('marginHint')),
       table(),
       h('h3', {}, t('burnIn')),
       h('p', { class: 'muted' }, t('burnInHint')),

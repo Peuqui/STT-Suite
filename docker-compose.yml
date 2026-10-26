@@ -40,8 +40,8 @@ services:
       # Eager load CPU model at startup (1=yes, 0=lazy)
       - STT_EAGER_LOAD=${STT_EAGER_LOAD:-1}
       # ── Speaker diarization (optional, per-request via diarize=1) ──
-      # Model + VRAM floor for the pyannote worker; it picks its own GPU and
-      # avoids the one Whisper occupies.
+      # Model + VRAM floor for the pyannote worker; GPU-Orc names its card (Whisper's worker counts
+      # there like any other holder).
       - DIARIZE_MODEL=${DIARIZE_MODEL:-pyannote/speaker-diarization-community-1}
       - DIARIZE_MIN_VRAM_MIB=${DIARIZE_MIN_VRAM_MIB:-1500}
       - DIARIZE_TTL_MINUTES=${DIARIZE_TTL_MINUTES:-10}
@@ -49,14 +49,14 @@ services:
       # host's token file through the mount below (single source of truth).
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_TOKEN_PATH=/hf-host/token
-      # Lock file shared with the TTS-Suite: choosing a card and loading the model onto it happens one
-      # program at a time, so two services starting together do not pick the same card. Unset = off.
-      - STT_GPU_PLACEMENT_LOCK=${STT_GPU_PLACEMENT_LOCK:-}
-      # GPU-Orc of this machine: its available_mib per card caps the free VRAM, because a vLLM model may
-      # fill its share of a card while it computes. From the container the host is host.docker.internal,
-      # and GPU-Orc wants its token there (the token file inside the directory mounted below). Unset = no GPU-Orc.
+      # GPU-Orc of this machine names the card of every GPU worker (POST /place): it counts what every
+      # program may take on a card, adds its margin and keeps the room until the worker runs. From the
+      # container the host is host.docker.internal, and GPU-Orc wants its token there (the token file inside
+      # the directory mounted below). STT_GPU_ORC_CONSUMER is this service's name among GPU-Orc's consumers.
+      # Unset URL = no GPU-Orc: nothing loads on a GPU (device=auto goes on, e.g. to the CPU).
       - STT_GPU_ORC_URL=${STT_GPU_ORC_URL:-}
       - STT_GPU_ORC_TOKEN_FILE=${STT_GPU_ORC_TOKEN_FILE:-}
+      - STT_GPU_ORC_CONSUMER=${STT_GPU_ORC_CONSUMER:-stt-suite}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -70,8 +70,6 @@ services:
       # huggingface_hub call then failed with IsADirectoryError. A missing
       # token now simply means no token.
       - ${HOME}/.cache/huggingface:/hf-host:ro
-      # Directory of the shared lock file (create it, and the file, as your user before the first start)
-      - ${STT_GPU_PLACEMENT_DIR:-/tmp}:/gpu-placement
       # Directory of GPU-Orc's token file, read-only (the directory: a missing file would become a directory)
       - ${STT_GPU_ORC_DIR:-/tmp/stt-suite-no-gpu-orc}:/gpu-orc:ro
     healthcheck:

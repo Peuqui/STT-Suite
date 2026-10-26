@@ -21,8 +21,6 @@ Endpoints:
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
 import gc
 import json
 import multiprocessing
@@ -82,8 +80,6 @@ _config = {
     # Parakeet precision), each one switched on or off. None until the first start fills it (see
     # _default_auto_chain).
     "auto_chain": None,
-    # Free VRAM (MiB) a card must keep beyond what a model needs before it is loaded there.
-    "vram_margin_mib": int(os.environ.get("STT_VRAM_MARGIN_MIB", "256")),
 }
 
 # Settings changed through /config survive a restart: the container cannot write the
@@ -175,42 +171,63 @@ def _read_vram_tables() -> tuple[dict, dict]:
 _VRAM_MIB, _VRAM_MEASURED = _read_vram_tables()
 
 
-# The GPU-Orc of this machine (from the container: http://host.docker.internal:5070 with its token): its
-# available_mib per card caps what nvidia-smi shows as free. A vLLM model may fill its share of a card
-# while it computes; a worker placed in that gap left the model without memory (25.10.2026). Empty =
-# no GPU-Orc on this machine, nvidia-smi alone.
+# The GPU-Orc of this machine names the card of every GPU worker (POST /place): it counts what every program may
+# take on a card (a vLLM model its share, a TTS engine its budget), adds its margin and promises the room until the
+# worker shows in /gpu/holders, so programs that start together never get the same room. From the container it is
+# http://host.docker.internal:5070 and wants its token. Unset = no GPU-Orc: nothing loads on a GPU (device=auto
+# goes on, e.g. to the CPU).
 _GPU_ORC_URL = os.environ.get("STT_GPU_ORC_URL", "")
 _GPU_ORC_TOKEN_FILE = os.environ.get("STT_GPU_ORC_TOKEN_FILE", "")
-_GPU_ORC_STATUS_TIMEOUT_S = 30  # GPU-Orc asks every consumer of the cards, this service included
+_GPU_ORC_CONSUMER = os.environ.get("STT_GPU_ORC_CONSUMER", "stt-suite")  # this service among GPU-Orc's consumers
+_GPU_ORC_HEALTH_TIMEOUT_S = 5  # GET /health, which says how long a /place may take
 
 
-def _gpu_orc_room() -> dict[str, int]:
-    """What another program may still take per card UUID, as GPU-Orc says. RuntimeError with the
-    reason when GPU-Orc does not answer usably or cannot say (a consumer did not report)."""
+class NoCard(Exception):
+    """GPU-Orc names no card for a worker; the message says why."""
+
+
+def _gpu_orc_call(path: str, body: dict | None, timeout_s: float) -> dict:
     import urllib.request
-    request = urllib.request.Request(f"{_GPU_ORC_URL.rstrip('/')}/status")
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(f"{_GPU_ORC_URL.rstrip('/')}{path}", data=data,
+                                     headers={"Content-Type": "application/json"})
+    if _GPU_ORC_TOKEN_FILE:
+        request.add_header("Authorization", "Bearer " + Path(_GPU_ORC_TOKEN_FILE).read_text(encoding="utf-8").strip())
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        return json.load(response)
+
+
+def _place(item: str, need_mib: int, reason: str, min_compute_cap: float = 0.0) -> tuple[int, str]:
+    """The card GPU-Orc gives this worker, as (nvidia-smi index, UUID); its need is promised there until the
+    worker shows in /gpu/holders. GPU-Orc does not count the worker of the same item (a model switch replaces
+    it). Waits as long as GPU-Orc says a caller should (making room may take that long). :class:`NoCard` with
+    the reason when there is none, no GPU-Orc is set, or it gives no usable answer."""
+    import urllib.error
+    if not _GPU_ORC_URL:
+        raise NoCard("no GPU-Orc configured (STT_GPU_ORC_URL): it names the card of a GPU worker")
+    body: dict = {"consumer": _GPU_ORC_CONSUMER, "item": item, "need_mib": need_mib, "reason": reason}
+    if min_compute_cap:
+        body["min_compute_cap"] = min_compute_cap
     try:
-        if _GPU_ORC_TOKEN_FILE:
-            request.add_header("Authorization", "Bearer " + Path(_GPU_ORC_TOKEN_FILE).read_text(encoding="utf-8").strip())
-        with urllib.request.urlopen(request, timeout=_GPU_ORC_STATUS_TIMEOUT_S) as response:
-            status = json.load(response)
-        room = {gpu["uuid"]: gpu["available_mib"] for gpu in status["gpus"]}
+        timeout_s = float(_gpu_orc_call("/health", None, _GPU_ORC_HEALTH_TIMEOUT_S)["caller_timeout_s"])
+        answer = _gpu_orc_call("/place", body, timeout_s)
+        card, why = answer["card"], answer["why"]
+        placed = None if card is None else (int(card["index"]), str(card["uuid"]))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")[:200]
+        raise NoCard(f"GPU-Orc at {_GPU_ORC_URL} refused: {error.code} {detail}") from error
     except (OSError, ValueError, KeyError, TypeError) as error:
-        raise RuntimeError(f"GPU-Orc at {_GPU_ORC_URL} gave no usable answer: {error!r}") from error
-    if None in room.values():
-        raise RuntimeError(f"GPU-Orc cannot say what is free: {status.get('errors')}")
-    return room
+        raise NoCard(f"GPU-Orc at {_GPU_ORC_URL} gave no usable answer: {error!r}") from error
+    if placed is None:
+        raise NoCard(f"GPU-Orc: {why}")
+    print(f"[STT] GPU-Orc gives {item} ({need_mib} MiB) GPU {placed[0]} ({placed[1]})", flush=True)
+    return placed
 
 
 def _vram_need_mib(engine: str, model: str, quality: str) -> int | None:
     """What this model needs on a card, without margin (a Whisper size or a Parakeet precision); None when the
     table does not name it."""
     return _VRAM_MIB.get(engine, {}).get(quality if engine == "parakeet" else model)
-
-
-def _vram_needed_mib(engine: str, model: str, quality: str) -> int:
-    """Free VRAM a card needs for this model, with the margin: a Whisper size or a Parakeet precision."""
-    return _VRAM_MIB[engine][quality if engine == "parakeet" else model] + _config["vram_margin_mib"]
 
 
 # ── Speaker diarization (optional, own worker on its own GPU) ─
@@ -426,106 +443,14 @@ _gpu_result_queue: multiprocessing.Queue | None = None
 _gpu_busy = False  # True while a transcription job is in flight
 _gpu_lock = threading.Lock()
 
-# Lock file shared with the TTS-Suite (mounted into the container). Whoever chooses a card holds the lock
-# until its model sits in VRAM, so the next one sees the real free memory instead of choosing the same
-# card at the same moment. Unset = no other program to coordinate with.
-_PLACEMENT_LOCK_FILE = os.environ.get("STT_GPU_PLACEMENT_LOCK", "")
-# Descriptor of the lock file while this process holds the lock. A worker forked inside the lock inherits a copy,
-# and flock holds the lock while any copy is open: the worker closes its copy first (_drop_inherited_placement_lock).
-_held_placement_lock: int | None = None
-
-
-@contextlib.contextmanager
-def _placement_lock():
-    """Choosing a card and loading the model onto it, one program at a time across the machine."""
-    global _held_placement_lock
-    if not _PLACEMENT_LOCK_FILE:
-        yield
-        return
-    with open(_PLACEMENT_LOCK_FILE, "a") as lock_file:  # closing the file (or dying) releases the lock
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        _held_placement_lock = lock_file.fileno()
-        try:
-            yield
-        finally:
-            _held_placement_lock = None
-
-
-def _drop_inherited_placement_lock() -> None:
-    """In a worker started inside the lock: close the inherited copy of the lock's descriptor. Otherwise the
-    worker would hold the lock for its whole life (found 25.10.: the TTS-Suite could not start an engine
-    while the STT GPU worker lived)."""
-    if _held_placement_lock is not None:
-        os.close(_held_placement_lock)
 _gpu_ttl_timer: threading.Timer | None = None
 _last_gpu_request = 0.0
 _gpu_device_index: int | None = None
-_gpu_uuid: str = ""  # UUID of the card Whisper sits on (diarization avoids it)
+_gpu_uuid: str = ""  # UUID of the card the GPU worker sits on
 _gpu_model_name: str = ""  # Track which model is loaded on GPU
 _gpu_engine: str = ""  # whisper | parakeet — the worker holds one engine
 _gpu_quality: str = ""  # Parakeet quality of the loaded worker
 _gpu_footprint_mib: int = 0  # What the loaded worker took on its card right after loading
-
-
-def _find_best_gpu(min_vram_mib: int,
-                   exclude_uuid: str | None = None,
-                   min_compute_cap: float = 0.0,
-                   tag: str = "Whisper") -> tuple[int, str] | None:
-    """Find the GPU with the most free VRAM. Prefers completely empty GPUs.
-
-    Returns (nvidia-smi index, GPU UUID). The worker pins the card via its
-    UUID — same SSOT technique as the llama-swap profiles — so the CUDA
-    enumeration order (FASTEST_FIRST vs PCI) can never select a different
-    card than the one reported here.
-
-    ``exclude_uuid`` skips a card already taken by another worker, so the
-    diarization model lands on a different GPU than Whisper instead of both
-    fighting over the same scraps of free VRAM.
-
-    ``min_compute_cap`` filters by GPU generation. PyTorch's bundled cuDNN
-    dropped Volta: anything below 7.5 aborts with "cuDNN version ... is not
-    compatible with devices with SM < 7.5" the moment a model is moved to
-    that card. Whisper/CTranslate2 is unaffected and still uses every GPU.
-    """
-    import subprocess
-    min_vram = min_vram_mib
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,uuid,memory.free,memory.used,name,compute_cap",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5, check=True,
-        )
-        room = _gpu_orc_room() if _GPU_ORC_URL else None
-        best: tuple[int, str] | None = None
-        best_free, best_used = 0, float("inf")
-        for line in result.stdout.strip().split("\n"):
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) >= 5:
-                idx, uuid = int(parts[0]), parts[1]
-                free, used = int(parts[2]), int(parts[3])
-                if room is not None:
-                    free = min(free, room[uuid])
-                name = parts[4]
-                cap = float(parts[5]) if len(parts) >= 6 else 0.0
-                print(f"[{tag}]   GPU {idx}: {name} (sm_{cap}) — {free} MiB free, "
-                      f"{used} MiB used", flush=True)
-                if uuid == exclude_uuid:
-                    continue
-                if min_compute_cap and cap < min_compute_cap:
-                    continue
-                if free < min_vram:
-                    continue
-                if best is None or used == 0 and best_used > 0 or (used == 0) == (best_used == 0) and free > best_free:
-                    best, best_free, best_used = (idx, uuid), free, used
-        if best is not None:
-            print(f"[{tag}] Selected GPU {best[0]} ({best[1]}, "
-                  f"free={best_free} MiB, used={int(best_used)} MiB)", flush=True)
-        else:
-            print(f"[{tag}] No GPU with >= {min_vram} MiB free VRAM", flush=True)
-        return best
-    except (subprocess.SubprocessError, OSError, ValueError, KeyError, RuntimeError) as e:
-        print(f"[{tag}] GPU detection failed: {e}", flush=True)
-        return None
 
 
 def _detect_gpu_compute(gpu_idx: int) -> str:
@@ -554,7 +479,6 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
                 gpu_idx: int, gpu_uuid: str, model_name: str, compute: str,
                 engine: str = "whisper", quality: str = "fp32"):
     """Child process: load model on GPU, process requests until killed."""
-    _drop_inherited_placement_lock()
     # Pin by UUID (SSOT, same as llama-swap profiles) — immune to CUDA's
     # enumeration order, which differs from nvidia-smi on mixed-GPU hosts.
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_uuid
@@ -643,66 +567,27 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
     print(f"[STT/GPU] Worker exiting (PID {os.getpid()})", flush=True)
 
 
-def _free_per_card_mib() -> dict[int, int]:
-    """Free VRAM (MiB) per card, by nvidia-smi index — with a GPU-Orc, no more than it says another
-    program may take; empty without an NVIDIA driver. RuntimeError when GPU-Orc cannot say."""
-    import subprocess
+def _card_for_worker(engine: str, model: str, quality: str, measuring: bool) -> tuple[int, str]:
+    """The card GPU-Orc gives the worker for exactly this model; nothing is substituted. The burn-in asks
+    without a need, because it measures what the model needs. :class:`GpuUnavailable` with the reason."""
+    name = _model_name(engine, model, quality)
+    need = 0 if measuring else _vram_need_mib(engine, model, quality)
+    if need is None:
+        raise GpuUnavailable(f"no VRAM need known for {name}")
     try:
-        result = subprocess.run(["nvidia-smi", "--query-gpu=index,uuid,memory.free", "--format=csv,noheader,nounits"],
-                                capture_output=True, text=True, timeout=5, check=True)
-    except FileNotFoundError:
-        return {}  # no NVIDIA driver in this container: no card has anything free
-    room = _gpu_orc_room() if _GPU_ORC_URL else None
-    free = {}
-    for index, uuid, mib in (line.split(",") for line in result.stdout.strip().splitlines()):
-        free[int(index)] = int(mib) if room is None else min(int(mib), room[uuid.strip()])
-    return free
+        return _place("gpu-worker", need, "burn-in" if measuring else f"transcription with {name}")
+    except NoCard as no_card:
+        raise GpuUnavailable(str(no_card)) from no_card
 
 
-def _refusal(need: int, free_mib: int) -> str:
-    return (f"needs {need} MiB free ({_config['vram_margin_mib']} MiB margin included), "
-            f"the card with the most has {free_mib} MiB")
-
-
-def _no_room(need: int) -> str:
-    """Why no card takes the model: the most free VRAM, or why nobody can say."""
-    try:
-        return _refusal(need, max(_free_per_card_mib().values(), default=0))
-    except RuntimeError as error:
-        return str(error)
-
-
-def _start_gpu_worker(engine: str, model: str, quality: str, check_fit: bool = True) -> str | None:
-    """Start the GPU child process with exactly this model on the card with the most free VRAM.
-
-    Nothing is substituted: a model that no card has room for is not loaded (`check_fit=False` is for
-    the burn-in, which measures what a model needs). Returns None when the worker is ready, else the
-    reason it is not.
-    """
-    need = _vram_needed_mib(engine, model, quality) if check_fit else 0
-    with _placement_lock():
-        selected = _find_best_gpu(min_vram_mib=need, tag="Parakeet" if engine == "parakeet" else "Whisper")
-        if selected is None:
-            return _no_room(need)
-        name = f"parakeet-{quality}" if engine == "parakeet" else model
-        compute = "" if engine == "parakeet" else _detect_gpu_compute(selected[0])
-        if not _spawn_gpu_worker(selected, name, compute, engine, quality):
-            return f"the worker for {name} did not start"
+def _start_gpu_worker(card: tuple[int, str], engine: str, model: str, quality: str) -> str | None:
+    """Start the GPU child process with exactly this model on the card GPU-Orc named. Returns None when the
+    worker is ready, else the reason it is not."""
+    name = _model_name(engine, model, quality)
+    compute = "" if engine == "parakeet" else _detect_gpu_compute(card[0])
+    if not _spawn_gpu_worker(card, name, compute, engine, quality):
+        return f"the worker for {name} did not start"
     return None
-
-
-def _room_after_release(need: int) -> str | None:
-    """Whether a card has `need` MiB free once the loaded worker has let go of its memory; None when
-    it does, else the reason. Decided from the table before the worker is stopped, so a model that
-    cannot be loaded never costs the one that is."""
-    try:
-        free = _free_per_card_mib()
-    except RuntimeError as error:
-        return str(error)
-    if _gpu_device_index in free:
-        free[_gpu_device_index] += _gpu_footprint_mib  # what it took when loaded: no more than it holds now
-    best = max(free.values(), default=0)
-    return None if best >= need else _refusal(need, best)
 
 
 def _spawn_gpu_worker(selected: tuple[int, str], model_name: str, compute: str,
@@ -859,17 +744,15 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
         wanted = _model_name(engine, model, quality)
         # The worker holds one model; another one means a swap — unless a job is still
         # running on it, then this request is refused like one without room.
-        if alive and (_gpu_engine, _gpu_model_name) != (engine, wanted):
-            if _gpu_busy:
-                raise GpuUnavailable(f"the GPU is busy with {_gpu_model_name}")
-            if not measuring and (refusal := _room_after_release(_vram_needed_mib(engine, model, quality))):
-                raise GpuUnavailable(refusal)  # decided before the loaded model is let go
-            if still_running := _kill_gpu_worker():
+        if alive and (_gpu_engine, _gpu_model_name) != (engine, wanted) and _gpu_busy:
+            raise GpuUnavailable(f"the GPU is busy with {_gpu_model_name}")
+        if not alive or (_gpu_engine, _gpu_model_name) != (engine, wanted):
+            # Asked before the loaded model is let go (GPU-Orc counts the worker it replaces as gone): a model
+            # that cannot be loaded never costs the one that is.
+            card = _card_for_worker(engine, model, quality, measuring)
+            if alive and (still_running := _kill_gpu_worker()):
                 raise GpuUnavailable(still_running)
-            alive = False
-        if not alive:
-            refusal = _start_gpu_worker(engine, model, quality, check_fit=not measuring)
-            if refusal is not None:
+            if (refusal := _start_gpu_worker(card, engine, model, quality)) is not None:
                 raise GpuUnavailable(refusal)
 
         # Send job
@@ -1034,7 +917,6 @@ _diarize_busy = False  # True between a submitted job and its collected result
 def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Queue,
                     gpu_idx: int, gpu_uuid: str, model_name: str, hf_token: str):
     """Child process: load the pyannote pipeline on its own GPU."""
-    _drop_inherited_placement_lock()
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_uuid
     print(f"[Diarize] Worker started on GPU {gpu_idx} ({gpu_uuid}, PID {os.getpid()})", flush=True)
 
@@ -1114,26 +996,16 @@ def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing
 
 
 def _start_diarize_worker() -> bool:
-    with _placement_lock():
-        return _choose_card_and_spawn_diarize_worker()
-
-
-def _choose_card_and_spawn_diarize_worker() -> bool:
-    """Start the diarization child process, avoiding Whisper's GPU."""
+    """Start the diarization child process on the card GPU-Orc names (Whisper's worker counts there like
+    any other holder, so it lands beside it only where both fit)."""
     global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index, _diarize_uuid
 
-    selected = _find_best_gpu(min_vram_mib=_DIARIZE_MIN_VRAM_MIB,
-                              exclude_uuid=_gpu_uuid or None,
-                              min_compute_cap=_DIARIZE_MIN_COMPUTE_CAP, tag="Diarize")
-    if selected is None and _gpu_uuid:
-        # No second card with room — sharing Whisper's GPU is still better
-        # than failing outright, as long as it has enough headroom left.
-        print("[Diarize] No separate GPU free — retrying on Whisper's card", flush=True)
-        selected = _find_best_gpu(min_vram_mib=_DIARIZE_MIN_VRAM_MIB,
-                                  min_compute_cap=_DIARIZE_MIN_COMPUTE_CAP, tag="Diarize")
-    if selected is None:
+    try:
+        gpu_idx, gpu_uuid = _place("diarize-worker", _DIARIZE_MIN_VRAM_MIB, "speaker diarization",
+                                   _DIARIZE_MIN_COMPUTE_CAP)
+    except NoCard as no_card:
+        print(f"[Diarize] No GPU: {no_card}", flush=True)
         return False
-    gpu_idx, gpu_uuid = selected
 
     _diarize_device_index = gpu_idx
     _diarize_uuid = gpu_uuid
@@ -1626,7 +1498,7 @@ def status():
         "engines": ENGINES,
         "parakeet_qualities": PARAKEET_QUALITIES,
         "devices": DEVICES,
-        # Free VRAM a card needs per model before it is loaded there (the margin comes on top), and which
+        # VRAM each model needs on a card, the need GPU-Orc is asked with (it adds its margin), and which
         # of those a burn-in measured on this machine (the others are estimates).
         "vram_needed_mib": _VRAM_MIB,
         "vram_measured": _VRAM_MEASURED,
@@ -1733,8 +1605,8 @@ def gpu_holders():
 
 @app.route("/gpu/needs", methods=["GET"])
 def gpu_needs():
-    """What each model needs on a card, for GPU-Orc's plan: the bare need without this service's own
-    margin, ``source`` ``measured`` (burn-in) or ``estimate``; ``default`` marks the model the GPU loads
+    """What each model needs on a card, for GPU-Orc's plan: the bare need (GPU-Orc adds its margin),
+    ``source`` ``measured`` (burn-in) or ``estimate``; ``default`` marks the model the GPU loads
     when a request names none. The diarization worker needs at least its floor (an estimate)."""
     default = (f"parakeet-{_config['gpu_quality']}" if _config["gpu_engine"] == "parakeet"
                else f"whisper-{_config['gpu_model']}")
@@ -1804,7 +1676,6 @@ _NUMBERS = {
     "gpu_ttl_minutes": lambda value: max(0, int(value)),
     "beam_size": lambda value: max(1, min(20, int(value))),
     "num_speakers": lambda value: max(0, min(10, int(value))),
-    "vram_margin_mib": lambda value: max(0, int(value)),
 }
 _FLAGS = ("vad_filter", "condition_on_previous_text")
 _TEXTS = ("language", "initial_prompt")

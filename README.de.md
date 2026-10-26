@@ -18,24 +18,22 @@ heißt `stt-suite`.)
   für die CPU und für die GPU unabhängig eingestellt: Parakeet int8 auf der CPU und Whisper large-v3 auf der GPU geht ebenso wie
   andersherum. Eine Anfrage kann Engine, Modell und Genauigkeit überschreiben.
 - **CPU und GPU, pro Anfrage gewählt.** Das CPU-Modell bleibt dauerhaft geladen (keine
-  Ladezeit, kein VRAM). Das GPU-Modell wird bei Bedarf auf die Karte mit dem meisten freien
-  VRAM geladen und nach einer einstellbaren Leerlaufzeit wieder freigegeben.
+  Ladezeit, kein VRAM). Das GPU-Modell wird bei Bedarf auf die Karte geladen, die der
+  [GPU-Orc](https://github.com/Peuqui/GPU-Orc) des Rechners nennt, und nach einer einstellbaren Leerlaufzeit wieder freigegeben.
 - **Genau das Modell, das du gewählt hast.** `device=cuda` lädt das eingestellte GPU-Modell oder antwortet mit `503`, wenn keine
-  Karte den dafür nötigen freien VRAM hat (`vram_mib.json`); es wird nichts still ersetzt.
+  Karte Platz für seinen Bedarf hat (`vram_mib.json`, so wie GPU-Orc zählt); es wird nichts still ersetzt.
 - **`device=auto` für einen Rückfall, den du verlangst:** geht eine Liste durch, die du einstellst (`auto_chain` in der
   Konfiguration, auf der Webseite unter Konfiguration: Einträge aus Gerät, Engine und Modell, die sich verschieben,
   ausschalten, ändern und hinzufügen lassen; zuerst das eingestellte GPU-Modell, dann das eingestellte CPU-Modell). Der erste
-  Eintrag, der kann, nimmt die Anfrage. Was kann, ergibt sich aus der Tabelle des VRAM-Bedarfs und einer
-  `nvidia-smi`-Abfrage, ohne etwas probeweise zu laden, und bevor ein geladenes Modell losgelassen wird: Ein Modell, das sich nicht
-  laden lässt, kostet nie das, das geladen ist. Die Antwort nennt, womit transkribiert wurde, und listet in `fallback`, was nicht
+  Eintrag, der kann, nimmt die Anfrage. Was kann, entscheidet GPU-Orc aus der Tabelle des VRAM-Bedarfs, ohne etwas probeweise zu
+  laden, und bevor ein geladenes Modell losgelassen wird: Ein Modell, das sich nicht laden lässt, kostet nie das, das geladen ist. Die Antwort nennt, womit transkribiert wurde, und listet in `fallback`, was nicht
   konnte und warum.
 - **Eine Tabelle des VRAM-Bedarfs, die du misst.** Die mitgelieferten Werte sind Schätzungen. Die Webseite (Reiter Grafikspeicher)
   macht ein Burn-in: Sie lädt jedes gewählte Modell nacheinander auf eine GPU, transkribiert eine Aufnahme und nimmt den höchsten
   Anstieg des belegten Speichers (nimm eine Aufnahme, wie sie bei dir typisch ist: Parakeet braucht für ein Diktat von 10 Sekunden
-  etwa 3,7 GB, für eine Aufnahme von mehreren Minuten, die es in Stücken bis 60 Sekunden abarbeitet, etwa 6,3 GB); das Ergebnis ersetzt die Schätzung und liegt im Zustands-Volume. Ein Puffer
-  (`vram_margin_mib`, Standard 256 MiB) kommt zu jedem Bedarf dazu und bleibt auf der Karte frei; kleiner machen, wenn ein
-  Modell knapp nicht mehr passt, oder die Liste zum nächstkleineren weitergehen lassen.
-- **Optionale Sprechererkennung** mit pyannote, auf einer zweiten GPU, pro Anfrage.
+  etwa 3,7 GB, für eine Aufnahme von mehreren Minuten, die es in Stücken bis 60 Sekunden abarbeitet, etwa 6,3 GB); das Ergebnis ersetzt die Schätzung und liegt im Zustands-Volume.
+  GPU-Orc rechnet zu jedem Bedarf seinen Puffer dazu.
+- **Optionale Sprechererkennung** mit pyannote, in einem eigenen Worker auf der Karte, die GPU-Orc nennt, pro Anfrage.
 - Eine Webseite unter `/` (leitet auf `/ui/`; Deutsch und Englisch, hell und dunkel, wie bei der TTS-Suite): der Zustand der
   Modelle auf CPU und GPU mit einem Knopf zum Freigeben, die Laufzeit-Konfiguration und eine Probe, die eine Datei oder eine
   Aufnahme vom Mikrofon auf dem gewählten Gerät transkribiert. Sie besteht aus HTML, CSS und JavaScript in `ui/` und nutzt
@@ -77,7 +75,7 @@ Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `stt_sui
 | GET/POST | `/config` | Laufzeit-Konfiguration lesen oder ändern (JSON) |
 | POST | `/unload` | Die CPU-Modelle entladen (die GPU-Worker: `/gpu/release`) |
 | GET | `/gpu/holders` | Die GPU-Worker, die laufen: `item`, `gpu_uuids` (die Karte, auf der er gestartet wurde), `memory_mib` (was der GPU-Worker beim Laden belegt hat), `busy`, `need_mib` (was er auf seiner Karte braucht, wie in `/gpu/needs`) |
-| GET | `/gpu/needs` | Was jedes Modell auf einer Karte braucht, für die Planung von GPU-Orc: `item` (z. B. `parakeet-fp32`, `whisper-large-v3`, `diarize`), `need_mib` (der nackte Bedarf ohne den eigenen Puffer), `source` (`measured` = Burn-in, `estimate`), `default` (das Modell, das die GPU lädt, wenn eine Anfrage keines nennt) |
+| GET | `/gpu/needs` | Was jedes Modell auf einer Karte braucht, für die Planung von GPU-Orc: `item` (z. B. `parakeet-fp32`, `whisper-large-v3`, `diarize`), `need_mib` (der nackte Bedarf, GPU-Orc rechnet seinen Puffer dazu), `source` (`measured` = Burn-in, `estimate`), `default` (das Modell, das die GPU lädt, wenn eine Anfrage keines nennt) |
 | POST | `/gpu/release` | JSON `{"items": ["gpu-worker", "diarize-worker"] \| "all", "force": false, "reason": "…"}`. Ein Ergebnis je Element: `released` (der Prozess ist nachweislich beendet), `not_running`, `busy` (ohne force in Ruhe gelassen), `failed`. `200`, `409` wenn eines beschäftigt ist, `500` wenn eines gescheitert ist. Mit `force` erfährt eine laufende Transkription den Grund und gilt als „GPU nicht verfügbar“: mit `device=auto` läuft sie auf der CPU weiter, mit `device=cuda` antwortet sie `503` mit dem Grund. Die gemeinsame Freigabe-Schnittstelle der Suiten, genutzt von [GPU-Orc](https://github.com/Peuqui/GPU-Orc) |
 | POST, GET | `/burn-in` | `POST` (Formular: `file`, optional `entries`, eine JSON-Liste aus `{"engine", "model"}`) startet im Hintergrund die Messung des VRAM-Bedarfs der Modelle; `GET` zeigt den Stand (`running`, `step`, `results`, `error`). `409`, solange eine läuft oder die GPU transkribiert |
 | GET | `/`, `/ui/` | Webseite: Zustand, Konfiguration, Probe |
@@ -126,8 +124,8 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `WHISPER_CPU_MODEL` | `WHISPER_MODEL` | Modell auf der CPU |
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper-Größe auf der GPU |
 | `STT_GPU_TTL_MINUTES` | `30` | Leerlauf-Minuten, bis der GPU-Worker endet und sein VRAM frei wird; `0` behält ihn |
-| `STT_GPU_PLACEMENT_LOCK` | nicht gesetzt | Sperrdatei (im Container, z. B. `/gpu-placement/placement.lock`, im Verzeichnis `STT_GPU_PLACEMENT_DIR` des Hosts, das dort eingehängt ist), die dieser Dienst und die TTS-Suite mit `flock` sperren, solange sie eine Karte wählen und darauf laden. Zwei gleichzeitig startende Dienste wählen dann nicht dieselbe Karte. Nicht gesetzt = aus; die Datei muss existieren und schreibbar sein |
-| `STT_GPU_ORC_URL` / `STT_GPU_ORC_TOKEN_FILE` / `STT_GPU_ORC_DIR` | nicht gesetzt | Der GPU-Orc dieses Rechners (aus dem Container `http://host.docker.internal:5070`), seine Token-Datei im Container (z. B. `/gpu-orc/token`) und das Verzeichnis des Hosts, das dort schreibgeschützt eingehängt ist (z. B. `~/.config/gpu-orc`). Sein `available_mib` je Karte begrenzt den freien VRAM: Ein vLLM-Modell darf seinen Anteil einer Karte füllen, während es rechnet, nvidia-smi zeigt ihn dazwischen als frei. Antwortet GPU-Orc nicht oder kann er nichts sagen, nimmt die GPU kein Modell (`auto` geht weiter, z. B. auf die CPU). Nicht gesetzt = kein GPU-Orc, nur nvidia-smi |
+| `STT_GPU_ORC_URL` / `STT_GPU_ORC_TOKEN_FILE` / `STT_GPU_ORC_DIR` | nicht gesetzt | Der GPU-Orc dieses Rechners (aus dem Container `http://host.docker.internal:5070`), seine Token-Datei im Container (z. B. `/gpu-orc/token`) und das Verzeichnis des Hosts, das dort schreibgeschützt eingehängt ist (z. B. `~/.config/gpu-orc`). Bevor ein GPU-Worker startet, fragt der Dienst ihn mit `POST /place` (der Worker als `gpu-worker` oder `diarize-worker`, sein Bedarf aus der Tabelle) und startet auf der Karte, die er nennt; GPU-Orc zählt, was jedes Programm auf einer Karte belegen darf (ein vLLM-Modell seinen Anteil), rechnet seinen Puffer dazu und hält den Platz frei, bis der Worker läuft. Keine Karte, oder GPU-Orc antwortet nicht: Die GPU nimmt kein Modell (`auto` geht weiter, z. B. auf die CPU; `cuda` antwortet `503` mit dem Grund). Ohne URL lädt nichts auf eine GPU |
+| `STT_GPU_ORC_CONSUMER` | `stt-suite` | Der Name dieses Dienstes unter den Verbrauchern in der Konfiguration von GPU-Orc |
 | `STT_LANGUAGE` | `de` | Standardsprache (`auto` erkennt sie) |
 | `STT_EAGER_LOAD` | `1` | CPU-Modell beim Start laden |
 | `STT_CONFIG_FILE` | `/state/config.json` | Ablage der über `/config` geänderten Einstellungen (Volume `stt_suite_state`). Die Umgebung liefert nur die ersten Standardwerte; sobald die Datei existiert, gilt sie. Zum Zurücksetzen löschen |
@@ -137,9 +135,8 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet-Genauigkeit auf CPU / GPU, wenn eine Anfrage keine nennt: `fp32` oder `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet schneidet das Audio an Sprechpausen in Stücke von höchstens dieser Länge und fasst kürzere Pausen zusammen |
 | `PARAKEET_BATCH` | `1` | So viele Stücke erkennt Parakeet auf einmal. Bei 1 braucht eine lange Aufnahme nicht mehr VRAM als ein Stück, und der Burn-in (mit einer Aufnahme von mindestens `PARAKEET_CHUNK_S`) misst genau diese Grenze; bei mehr wächst der Bedarf mit der Länge bis zum Vielfachen |
-| `STT_VRAM_FILE` | `vram_mib.json` | Freier VRAM (MiB), den eine Karte braucht, bevor ein Modell darauf geladen wird, je Whisper-Größe und Parakeet-Genauigkeit: Schätzwerte, ersetzt durch das, was ein Burn-in gemessen hat |
+| `STT_VRAM_FILE` | `vram_mib.json` | VRAM (MiB), den ein Modell auf einer Karte braucht, je Whisper-Größe und Parakeet-Genauigkeit, der Bedarf, mit dem der Dienst GPU-Orc fragt: Schätzwerte, ersetzt durch das, was ein Burn-in gemessen hat |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Wo die gemessenen Werte liegen (Volume `stt_suite_state`); löschen, um zu den Schätzwerten zurückzukehren |
-| `STT_VRAM_MARGIN_MIB` | `256` | Freier VRAM, der auf einer Karte über den Bedarf eines Modells hinaus bleibt; auch auf der Webseite einstellbar |
 
 Verfügbare Modelle: `tiny`, `base`, `small`, `medium`, `large-v3`.
 

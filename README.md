@@ -18,24 +18,23 @@ service, errors as JSON, and a README in German and in English. (The Docker cont
   int8), set for the CPU and for the GPU independently: Parakeet int8 on the CPU and Whisper large-v3 on
   the GPU is as possible as the other way round. A request can override engine, model and precision.
 - **CPU and GPU, chosen per request.** The CPU model stays loaded all the time (no load time,
-  no VRAM). The GPU model is loaded on demand into the card with the most free VRAM and
-  released again after a configurable idle time.
+  no VRAM). The GPU model is loaded on demand onto the card the [GPU-Orc](https://github.com/Peuqui/GPU-Orc)
+  of the machine names and released again after a configurable idle time.
 - **Exactly the model you chose.** `device=cuda` loads the configured GPU model or answers `503` when no
-  card has the free VRAM it needs (`vram_mib.json`); nothing is substituted silently.
+  card has room for what it needs (`vram_mib.json`, as GPU-Orc counts it); nothing is substituted silently.
 - **`device=auto` for a fallback you ask for:** it goes through a list you set (`auto_chain` in the
   configuration, on the web page under Configuration: entries of device, engine and model that can be
   moved, switched off, changed and added; at first the configured GPU model and then the configured CPU
-  model). The first entry that can takes the request. Which one can is decided from the table of VRAM needs
-  and one `nvidia-smi` query, without loading anything on trial, and before a model in memory is let go: a
-  model that cannot be loaded never costs the one that is. The answer names what transcribed and lists in
+  model). The first entry that can takes the request. Which one can GPU-Orc decides from the table of VRAM
+  needs, without loading anything on trial, and before a model in memory is let go: a model that cannot be
+  loaded never costs the one that is. The answer names what transcribed and lists in
   `fallback` what could not and why.
 - **A table of VRAM needs you measure.** The shipped values are estimates. The web page (tab Graphics memory)
   runs a burn-in: it loads each chosen model onto a GPU in turn, transcribes a recording and takes the highest
   rise of the used memory (use a recording typical of your use: Parakeet needs about 3.7 GB for a 10 second dictation but
-  about 6.3 GB for a recording of several minutes, which it works on in pieces of up to 60 seconds); the result replaces the estimate and is kept in the state volume. A margin
-  (`vram_margin_mib`, default 256 MiB) is added to every need and kept free on the card; make it smaller when a
-  model just no longer fits, or let the list go on to the next smaller one.
-- **Optional speaker diarization** with pyannote, on a second GPU, per request.
+  about 6.3 GB for a recording of several minutes, which it works on in pieces of up to 60 seconds); the result replaces the estimate and is kept in the state volume.
+  GPU-Orc adds its own margin to every need.
+- **Optional speaker diarization** with pyannote, in a worker of its own on the card GPU-Orc names, per request.
 - A web page at `/` (it goes to `/ui/`; German and English, light and dark, like the TTS-Suite's): the status of the
   models on the CPU and the GPU with a button to release each, the runtime configuration, and a test that
   transcribes a file or a recording from the microphone on the chosen device. It is plain HTML, CSS and JavaScript in
@@ -77,7 +76,7 @@ and survive rebuilds. The container restarts with Docker (`restart: unless-stopp
 | GET/POST | `/config` | Read or change the runtime configuration (JSON) |
 | POST | `/unload` | Unload the CPU models (the GPU workers: `/gpu/release`) |
 | GET | `/gpu/holders` | The GPU workers that run: `item`, `gpu_uuids` (the card it was started on), `memory_mib` (what the GPU worker took when loading), `busy`, `need_mib` (what it needs on its card, as in `/gpu/needs`) |
-| GET | `/gpu/needs` | What each model needs on a card, for GPU-Orc's plan: `item` (e.g. `parakeet-fp32`, `whisper-large-v3`, `diarize`), `need_mib` (the bare need without this service's margin), `source` (`measured` = burn-in, `estimate`), `default` (the model the GPU loads when a request names none) |
+| GET | `/gpu/needs` | What each model needs on a card, for GPU-Orc's plan: `item` (e.g. `parakeet-fp32`, `whisper-large-v3`, `diarize`), `need_mib` (the bare need, GPU-Orc adds its margin), `source` (`measured` = burn-in, `estimate`), `default` (the model the GPU loads when a request names none) |
 | POST | `/gpu/release` | JSON `{"items": ["gpu-worker", "diarize-worker"] \| "all", "force": false, "reason": "…"}`. One result per item: `released` (the process is proven ended), `not_running`, `busy` (left alone without force), `failed`. `200`, `409` when one is busy, `500` when one failed. With `force` a running transcription is told the reason and counts as "GPU unavailable": with `device=auto` it goes on on the CPU, with `device=cuda` it answers `503` with the reason. The common release API of the suites, used by [GPU-Orc](https://github.com/Peuqui/GPU-Orc) |
 | POST, GET | `/burn-in` | `POST` (form: `file`, optional `entries`, a JSON list of `{"engine", "model"}`) starts the measurement of the VRAM models need, in the background; `GET` shows how it stands (`running`, `step`, `results`, `error`). `409` while one runs or the GPU transcribes |
 | GET | `/`, `/ui/` | Web page: status, configuration, test |
@@ -128,8 +127,8 @@ Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt 
 | `WHISPER_CPU_MODEL` | `WHISPER_MODEL` | Model on the CPU |
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper size on the GPU |
 | `STT_GPU_TTL_MINUTES` | `30` | Idle minutes until the GPU worker is stopped and its VRAM freed; `0` keeps it |
-| `STT_GPU_PLACEMENT_LOCK` | unset | Lock file (inside the container, e.g. `/gpu-placement/placement.lock`, in the directory `STT_GPU_PLACEMENT_DIR` of the host mounted there) that this service and the TTS-Suite lock with `flock` while they choose a card and load onto it. Two services starting together then do not pick the same card. Unset = off; the file must exist and be writable |
-| `STT_GPU_ORC_URL` / `STT_GPU_ORC_TOKEN_FILE` / `STT_GPU_ORC_DIR` | unset | The GPU-Orc of this machine (from the container `http://host.docker.internal:5070`), its token file inside the container (e.g. `/gpu-orc/token`) and the host directory mounted there read-only (e.g. `~/.config/gpu-orc`). Its `available_mib` per card caps the free VRAM: a vLLM model may fill its share of a card while it computes, nvidia-smi shows it as free in between. If GPU-Orc does not answer or cannot say, the GPU takes no model (`auto` goes on, e.g. to the CPU). Unset = no GPU-Orc, nvidia-smi alone |
+| `STT_GPU_ORC_URL` / `STT_GPU_ORC_TOKEN_FILE` / `STT_GPU_ORC_DIR` | unset | The GPU-Orc of this machine (from the container `http://host.docker.internal:5070`), its token file inside the container (e.g. `/gpu-orc/token`) and the host directory mounted there read-only (e.g. `~/.config/gpu-orc`). Before a GPU worker starts, the service asks it with `POST /place` (the worker as `gpu-worker` or `diarize-worker`, its need from the table) and starts on the card it names; GPU-Orc counts what every program may take on a card (a vLLM model its share), adds its margin and keeps the room until the worker runs. No card, or GPU-Orc does not answer: the GPU takes no model (`auto` goes on, e.g. to the CPU; `cuda` answers `503` with the reason). Unset URL = nothing loads on a GPU |
+| `STT_GPU_ORC_CONSUMER` | `stt-suite` | This service's name among the consumers of GPU-Orc's configuration |
 | `STT_LANGUAGE` | `de` | Default language (`auto` detects it) |
 | `STT_EAGER_LOAD` | `1` | Load the CPU model at start |
 | `STT_CONFIG_FILE` | `/state/config.json` | Where settings changed via `/config` are kept (volume `stt_suite_state`). The environment only gives the first defaults; once this file exists it wins. Delete it to return to the environment |
@@ -139,9 +138,8 @@ Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt 
 | `STT_CPU_QUALITY` / `STT_GPU_QUALITY` | `fp32` / `fp32` | Parakeet precision on the CPU / the GPU when a request names none: `fp32` or `int8` |
 | `PARAKEET_CHUNK_S` / `PARAKEET_MERGE_SILENCE_MS` | `60` / `5000` | Parakeet cuts audio at speech pauses into chunks of at most this length, merging pauses shorter than this |
 | `PARAKEET_BATCH` | `1` | How many chunks Parakeet recognizes at once. At 1 a long recording needs no more VRAM than one chunk, and the burn-in (with a recording of at least `PARAKEET_CHUNK_S`) measures exactly that bound; above 1 the need grows with the length, up to that multiple |
-| `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision: estimates, replaced by what a burn-in measured |
+| `STT_VRAM_FILE` | `vram_mib.json` | VRAM (MiB) a model needs on a card, per Whisper size and Parakeet precision, the need the service asks GPU-Orc with: estimates, replaced by what a burn-in measured |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Where the measured needs are kept (volume `stt_suite_state`); delete it to return to the estimates |
-| `STT_VRAM_MARGIN_MIB` | `256` | Free VRAM kept on a card beyond what a model needs; also set on the web page |
 
 Available models: `tiny`, `base`, `small`, `medium`, `large-v3`.
 
