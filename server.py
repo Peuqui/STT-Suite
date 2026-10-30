@@ -32,6 +32,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
@@ -52,7 +53,7 @@ PARAKEET_QUALITIES = ["fp32", "int8"]
 
 _default_model = os.environ.get("WHISPER_MODEL", "medium")
 
-_config = {
+_config: dict[str, Any] = {
     "cpu_model": os.environ.get("WHISPER_CPU_MODEL", _default_model),
     "gpu_model": os.environ.get("WHISPER_GPU_MODEL", _default_model),
     "cpu_compute": os.environ.get("WHISPER_CPU_COMPUTE", "int8"),
@@ -232,19 +233,19 @@ def _load_cpu_model(model_name: str):
     print(f"[STT] Model loaded on cpu in {time.time() - t0:.1f}s", flush=True)
 
 
-def _ensure_cpu_model(model_name: str):
+def _ensure_cpu_model(model_name: str) -> Any:
     """The Whisper CPU model of this size; the caller holds _cpu_lock. Loads when nothing is
     loaded or another size is."""
     if _model_cpu is None or _cpu_model_name != model_name:
         _load_cpu_model(model_name)
+    return _model_cpu
 
 
 def _transcribe_cpu(audio_path: str, language: str, return_segments: bool,
                     model_name: str) -> dict:
     """Transcribe using the Whisper CPU model of this size (main process)."""
     with _cpu_lock:
-        _ensure_cpu_model(model_name)
-        model = _model_cpu
+        model = _ensure_cpu_model(model_name)
 
     t0 = time.time()
     segments, info = model.transcribe(
@@ -260,7 +261,7 @@ def _transcribe_cpu(audio_path: str, language: str, return_segments: bool,
     )
     # Materialise once — ``segments`` is a generator; the timestamps are what
     # the speaker merge needs.
-    seg_list = []
+    seg_list: list[tuple[float, float, str]] = []
     text_parts = []
     for s in segments:
         text_parts.append(s.text)
@@ -588,7 +589,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
             )
             # Materialise once — ``segments`` is a generator, a second pass
             # would be empty. Timestamps are what the speaker merge needs.
-            seg_list = []
+            seg_list: list[tuple[float, float, str]] = []
             text_parts = []
             for s in segments:
                 text_parts.append(s.text)
@@ -833,6 +834,8 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
 
         # Send job
         _gpu_busy = True
+        results = _gpu_result_queue
+        assert _gpu_request_queue is not None and results is not None  # the worker is alive here
         _gpu_request_queue.put({
             "audio_path": audio_path,
             "language": language,
@@ -845,7 +848,7 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
 
     # Wait for result (outside lock so CPU requests aren't blocked)
     try:
-        result = _gpu_result_queue.get(timeout=_GPU_RESULT_TIMEOUT_S)
+        result = results.get(timeout=_GPU_RESULT_TIMEOUT_S)
         if "withdrawn" in result:
             # The card was taken back for something else (GPU-Orc before a model load): to the plan this
             # is "no GPU now", so device=auto goes on on the CPU and device=cuda answers 503 with the reason.
@@ -1170,6 +1173,7 @@ def _diarize_submit(audio_path: str, num_speakers: int = 0) -> bool:
     with _diarize_lock:
         if (_diarize_process is None or not _diarize_process.is_alive()) and not _start_diarize_worker():
             return False
+        assert _diarize_request_queue is not None  # the worker is alive here
         _diarize_request_queue.put({"audio_path": audio_path,
                                     "num_speakers": num_speakers})
         _diarize_busy = True
