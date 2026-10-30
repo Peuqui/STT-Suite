@@ -7,10 +7,11 @@ import { t } from './i18n.js'
 export function configView({ show, fail }) {
   const root = h('div')
   let config = null
+  let rows = []
 
   async function load() {
     try {
-      config = await service.config()
+      ;[config, rows] = await Promise.all([service.config(), service.engines()])
       render()
     } catch (error) { fail(error) }
   }
@@ -34,8 +35,9 @@ export function configView({ show, fail }) {
   }
 
   // What a Whisper size or a Parakeet precision needs before a card takes it, in the choice itself.
-  const whisperLabel = (size) => `${size} · ${t('needsFree', { mib: config.vram_needed_mib.whisper[size] })}`
-  const parakeetLabel = (precision) => `${precision} · ${t('needsFree', { mib: config.vram_needed_mib.parakeet[precision] })}`
+  const needOf = (engine, model) => rows.find((row) => row.engine === engine && row.model === model).needed_mib
+  const whisperLabel = (size) => `${size} · ${t('needsFree', { mib: needOf('whisper', size) })}`
+  const parakeetLabel = (precision) => `${precision} · ${t('needsFree', { mib: needOf('parakeet', precision) })}`
 
   const number = (key) => h('input', { type: 'number', value: draft[key], onchange: (event) => (draft[key] = Number(event.target.value)) })
   const text = (key) => h('input', { type: 'text', value: draft[key], onchange: (event) => (draft[key] = event.target.value) })
@@ -43,7 +45,6 @@ export function configView({ show, fail }) {
 
   // The models an engine has: Whisper sizes, or Parakeet precisions.
   const modelsOf = (engine) => (engine === 'parakeet' ? config.parakeet_qualities : config.available_models)
-  const needOf = (entry) => config.vram_needed_mib[entry.engine][entry.model]
 
   function moveEntry(index, delta) {
     const target = index + delta
@@ -65,7 +66,7 @@ export function configView({ show, fail }) {
           config.engines.map((engine) => h('option', { value: engine, selected: engine === entry.engine }, engine))),
         h('select', { onchange: (event) => { entry.model = event.target.value; render() } },
           modelsOf(entry.engine).map((model) => h('option', { value: model, selected: model === entry.model }, model))),
-        h('span', { class: 'muted' }, entry.device === 'cuda' ? t('needsFree', { mib: needOf(entry) }) : t('cpuAlways')),
+        h('span', { class: 'muted' }, entry.device === 'cuda' ? t('needsFree', { mib: needOf(entry.engine, entry.model) }) : t('cpuAlways')),
         h('button', { class: 'small', onclick: () => { draft.auto_chain.splice(index, 1); render() } }, t('remove')))),
       h('div', { class: 'actions' }, h('button', { class: 'small', onclick: () => { draft.auto_chain.push({ device: 'cpu', engine: 'whisper', model: 'medium', enabled: true }); render() } }, t('add'))))
   }
@@ -75,7 +76,7 @@ export function configView({ show, fail }) {
   function render() {
     if (config === null) return
     for (const key of ['cpu_engine', 'gpu_engine', 'cpu_model', 'gpu_model', 'cpu_quality', 'gpu_quality', 'gpu_ttl_minutes', 'beam_size',
-      'language', 'vad_filter', 'condition_on_previous_text', 'initial_prompt', 'num_speakers']) draft[key] = config[key]
+      'language', 'vad_filter', 'condition_on_previous_text', 'initial_prompt', 'num_speakers', 'headroom_mib']) draft[key] = config[key]
     draft.auto_chain = structuredClone(config.auto_chain)
     replaceChildren(root,
       h('h2', {}, t('tabConfig')),
@@ -97,7 +98,8 @@ export function configView({ show, fail }) {
       group(t('groupGeneral'), '',
         h('label', {}, t('languageField')), text('language'),
         h('label', {}, t('ttl')), number('gpu_ttl_minutes'),
-        h('label', {}, t('speakers')), number('num_speakers')),
+        h('label', {}, t('speakers')), number('num_speakers'),
+        h('label', {}, t('headroom')), number('headroom_mib')),
       h('div', { class: 'actions' },
         h('button', { class: 'primary', onclick: save }, t('save')),
         h('button', { onclick: load }, t('reload'))),

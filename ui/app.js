@@ -1,12 +1,11 @@
 import { ApiError } from './api.js'
+import { catalogView } from './catalog.js'
 import { configView } from './config.js'
 import { h } from './dom.js'
 import { currentLanguage, onLanguageChange, t, toggleLanguage } from './i18n.js'
-import { statusView } from './status.js'
 import { testView } from './test.js'
-import { vramView } from './vram.js'
 
-// The page: three views behind tabs, the language and the colours. Light or dark follows the system until one is chosen.
+// The page: its views behind tabs, the language and the colours. Light or dark follows the system until one is chosen.
 const message = document.getElementById('message')
 // A message fades after a few seconds (an error stays longer) and goes at a tap.
 const NOTICE_MS = { ok: 4000, error: 10000 }
@@ -23,13 +22,12 @@ const show = (text) => say(text, 'ok')
 const fail = (error) => say(error instanceof ApiError || error instanceof Error ? error.message : String(error), 'error')
 
 const views = {
-  status: statusView({ show, fail }),
+  catalog: catalogView({ show, fail }),
   config: configView({ show, fail }),
-  vram: vramView({ show, fail }),
   test: testView({ show, fail }),
 }
-const TAB_KEYS = { status: 'tabStatus', config: 'tabConfig', vram: 'tabVram', test: 'tabTest' }
-let current = 'status'
+const TAB_KEYS = { catalog: 'tabCatalog', config: 'tabConfig', test: 'tabTest' }
+let current = 'catalog'
 
 for (const [name, view] of Object.entries(views)) document.getElementById(`view-${name}`).append(view.root)
 
@@ -73,4 +71,4 @@ document.getElementById('theme').addEventListener('click', () => {
 })
 onLanguageChange(translateStatic)
 translateStatic()
-select(location.hash.slice(1) in views ? location.hash.slice(1) : 'status')
+select(location.hash.slice(1) in views ? location.hash.slice(1) : 'catalog')

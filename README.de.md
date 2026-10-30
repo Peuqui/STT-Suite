@@ -29,15 +29,15 @@ heißt `stt-suite`.)
   `nvidia-smi`-Abfrage, ohne etwas probeweise zu laden, und bevor ein geladenes Modell losgelassen wird: Ein Modell, das sich nicht
   laden lässt, kostet nie das, das geladen ist. Die Antwort nennt, womit transkribiert wurde, und listet in `fallback`, was nicht
   konnte und warum.
-- **Eine Tabelle des VRAM-Bedarfs, die du misst.** Die mitgelieferten Werte sind Schätzungen. Die Webseite (Reiter Grafikspeicher)
-  macht ein Burn-in: Sie lädt jedes gewählte Modell nacheinander auf eine GPU, transkribiert eine Aufnahme und nimmt den höchsten
-  Anstieg des belegten Speichers (nimm eine Aufnahme, wie sie bei dir typisch ist: Parakeet braucht für ein Diktat von 10 Sekunden
-  etwa 3,7 GB, für eine Aufnahme von mehreren Minuten, die es in Stücken bis 60 Sekunden abarbeitet, etwa 6,3 GB); das Ergebnis ersetzt die Schätzung und liegt im Zustands-Volume. Ein Puffer
-  (`vram_margin_mib`, Standard 256 MiB) kommt zu jedem Bedarf dazu und bleibt auf der Karte frei; kleiner machen, wenn ein
-  Modell knapp nicht mehr passt, oder die Liste zum nächstkleineren weitergehen lassen.
+- **Eine Tabelle des VRAM-Bedarfs, die du misst.** Die mitgelieferten Werte sind Schätzungen. Die Webseite (Reiter Engines) hat
+  je Modell einen Burn-in-Knopf, wie bei der TTS-Suite: Er lädt das Modell auf eine GPU, transkribiert die mitgelieferte Aufnahme
+  (gut eine Minute Sprache, länger als das längste Stück, das Parakeet einzeln abarbeitet) und nimmt den höchsten Anstieg des belegten
+  Speichers; das Ergebnis ersetzt die Schätzung und liegt im Zustands-Volume. Ein Aufschlag (`headroom_mib`, Standard 256 MiB,
+  Reiter Konfiguration) kommt zu jedem Bedarf dazu und bleibt auf der Karte frei; kleiner machen, wenn ein Modell knapp nicht mehr
+  passt, oder die Liste zum nächstkleineren weitergehen lassen.
 - **Optionale Sprechererkennung** mit pyannote, auf einer zweiten GPU, pro Anfrage.
-- Eine Webseite unter `/` (leitet auf `/ui/`; Deutsch und Englisch, hell und dunkel, wie bei der TTS-Suite): der Zustand der
-  Modelle auf CPU und GPU mit einem Knopf zum Freigeben, die Laufzeit-Konfiguration und eine Probe, die eine Datei oder eine
+- Eine Webseite unter `/` (leitet auf `/ui/`; Deutsch und Englisch, hell und dunkel, wie bei der TTS-Suite): die Modelle mit ihrem
+  Zustand auf CPU und GPU, ihrem Bedarf und Knöpfen zum Freigeben und für den Burn-in, die Laufzeit-Konfiguration und eine Probe, die eine Datei oder eine
   Aufnahme vom Mikrofon auf dem gewählten Gerät transkribiert. Sie besteht aus HTML, CSS und JavaScript in `ui/` und nutzt
   dieselben HTTP-Aufrufe wie jeder andere Client.
 
@@ -75,11 +75,12 @@ Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `stt_sui
 | GET | `/health` | Bereitschaft: `status`, `model_loaded`, geladene Modelle je Gerät |
 | GET | `/status` | Ausführlicher Status und die vollständige Laufzeit-Konfiguration |
 | GET/POST | `/config` | Laufzeit-Konfiguration lesen oder ändern (JSON) |
+| GET | `/engines` | Jedes Modell jeder Engine: `engine`, `model`, `loaded_on` (Geräte), `needed_mib` (was eine Karte frei haben muss: Bedarf plus Aufschlag), `measured` (per Burn-in gemessen, sonst Schätzung). Wie der Katalog der TTS-Suite |
 | POST | `/unload` | Die CPU-Modelle entladen (die GPU-Worker: `/gpu/release`) |
 | GET | `/gpu/holders` | Die GPU-Worker, die laufen: `item`, `gpu_uuids` (die Karte, auf der er gestartet wurde), `memory_mib` (was der GPU-Worker beim Laden belegt hat), `busy` |
 | POST | `/gpu/release` | JSON `{"items": ["gpu-worker", "diarize-worker"] \| "all", "force": false, "reason": "…"}`. Ein Ergebnis je Element: `released` (der Prozess ist nachweislich beendet), `not_running`, `busy` (ohne force in Ruhe gelassen), `failed`. `200`, `409` wenn eines beschäftigt ist, `500` wenn eines gescheitert ist. Mit `force` erfährt eine laufende Transkription den Grund und gilt als „GPU nicht verfügbar“: mit `device=auto` läuft sie auf der CPU weiter, mit `device=cuda` antwortet sie `503` mit dem Grund. Die gemeinsame Freigabe-Schnittstelle der Suiten, genutzt von [GPU-Orc](https://github.com/Peuqui/GPU-Orc) |
-| POST, GET | `/burn-in` | `POST` (Formular: `file`, optional `entries`, eine JSON-Liste aus `{"engine", "model"}`) startet im Hintergrund die Messung des VRAM-Bedarfs der Modelle; `GET` zeigt den Stand (`running`, `step`, `results`, `error`). `409`, solange eine läuft oder die GPU transkribiert |
-| GET | `/`, `/ui/` | Webseite: Zustand, Konfiguration, Probe |
+| POST, GET | `/burn-in` | `POST` mit JSON `{"engine", "model"}` startet im Hintergrund die Messung eines Modells, `202`; `GET` zeigt den Stand (`running`, `engine`, `model`, `peak_mib`, `error`). `409` (`burn_in_running`, `gpu_busy`), solange eine läuft oder die GPU transkribiert. Wie bei der TTS-Suite |
+| GET | `/`, `/ui/` | Webseite: Engines, Konfiguration, Probe |
 
 `POST /transcribe` erwartet ein Multipart-Formular:
 
@@ -97,7 +98,9 @@ Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `stt_sui
 Die Antwort ist JSON mit `text`, der benötigten Zeit, dem verwendeten Gerät und der Engine mit ihrem Modell (`model` bei
 Whisper, `quality` bei Parakeet); nach einem Rückfall auch `fallback`, die Liste dessen, was die Anfrage nicht übernehmen
 konnte, je mit `tried` und `reason`. Fehler: `400` bei fehlender Datei oder ungültigem Wert, `503`, wenn die GPU für das Modell
-keinen Platz hat (oder mit einem anderen beschäftigt ist), sonst `500`.
+keinen Platz hat (oder mit einem anderen beschäftigt ist), sonst `500`. Eine Ablehnung ist JSON `{"error": <Code>, "detail": <Text>}`,
+wie bei der TTS-Suite; die Codes sind `bad_request`, `gpu_unavailable`, `gpu_busy`, `burn_in_running`, `decode_failed` und
+`transcription_failed`.
 
 ```
 curl -F file=@sprache.webm -F device=cuda http://localhost:5080/transcribe
@@ -137,7 +140,7 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `PARAKEET_BATCH` | `1` | So viele Stücke erkennt Parakeet auf einmal. Bei 1 braucht eine lange Aufnahme nicht mehr VRAM als ein Stück, und der Burn-in (mit einer Aufnahme von mindestens `PARAKEET_CHUNK_S`) misst genau diese Grenze; bei mehr wächst der Bedarf mit der Länge bis zum Vielfachen |
 | `STT_VRAM_FILE` | `vram_mib.json` | Freier VRAM (MiB), den eine Karte braucht, bevor ein Modell darauf geladen wird, je Whisper-Größe und Parakeet-Genauigkeit: Schätzwerte, ersetzt durch das, was ein Burn-in gemessen hat |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Wo die gemessenen Werte liegen (Volume `stt_suite_state`); löschen, um zu den Schätzwerten zurückzukehren |
-| `STT_VRAM_MARGIN_MIB` | `256` | Freier VRAM, der auf einer Karte über den Bedarf eines Modells hinaus bleibt; auch auf der Webseite einstellbar |
+| `STT_HEADROOM_MIB` | `256` | Aufschlag: freier VRAM, der auf einer Karte über den Bedarf eines Modells hinaus bleibt; auch auf der Webseite einstellbar |
 
 Verfügbare Modelle: `tiny`, `base`, `small`, `medium`, `large-v3`.
 

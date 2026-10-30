@@ -29,15 +29,15 @@ service, errors as JSON, and a README in German and in English. (The Docker cont
   and one `nvidia-smi` query, without loading anything on trial, and before a model in memory is let go: a
   model that cannot be loaded never costs the one that is. The answer names what transcribed and lists in
   `fallback` what could not and why.
-- **A table of VRAM needs you measure.** The shipped values are estimates. The web page (tab Graphics memory)
-  runs a burn-in: it loads each chosen model onto a GPU in turn, transcribes a recording and takes the highest
-  rise of the used memory (use a recording typical of your use: Parakeet needs about 3.7 GB for a 10 second dictation but
-  about 6.3 GB for a recording of several minutes, which it works on in pieces of up to 60 seconds); the result replaces the estimate and is kept in the state volume. A margin
-  (`vram_margin_mib`, default 256 MiB) is added to every need and kept free on the card; make it smaller when a
-  model just no longer fits, or let the list go on to the next smaller one.
+- **A table of VRAM needs you measure.** The shipped values are estimates. The web page (tab Engines) has a burn-in
+  button per model, like the TTS-Suite's: it loads the model onto a GPU, transcribes the recording that comes with the
+  service (a good minute of speech, longer than the longest piece Parakeet works on) and takes the highest rise of the
+  used memory; the result replaces the estimate and is kept in the state volume. A margin (`headroom_mib`, default
+  256 MiB, tab Configuration) is added to every need and kept free on the card; make it smaller when a model just no
+  longer fits, or let the list go on to the next smaller one.
 - **Optional speaker diarization** with pyannote, on a second GPU, per request.
-- A web page at `/` (it goes to `/ui/`; German and English, light and dark, like the TTS-Suite's): the status of the
-  models on the CPU and the GPU with a button to release each, the runtime configuration, and a test that
+- A web page at `/` (it goes to `/ui/`; German and English, light and dark, like the TTS-Suite's): the models with their
+  state on the CPU and the GPU, their need and buttons to release them and for the burn-in, the runtime configuration, and a test that
   transcribes a file or a recording from the microphone on the chosen device. It is plain HTML, CSS and JavaScript in
   `ui/` and uses the same HTTP calls as any other client.
 
@@ -75,11 +75,12 @@ and survive rebuilds. The container restarts with Docker (`restart: unless-stopp
 | GET | `/health` | Readiness: `status`, `model_loaded`, loaded models per device |
 | GET | `/status` | Detailed status and the full runtime configuration |
 | GET/POST | `/config` | Read or change the runtime configuration (JSON) |
+| GET | `/engines` | Every model of every engine: `engine`, `model`, `loaded_on` (devices), `needed_mib` (what a card must have free: need plus margin), `measured` (by a burn-in, else an estimate). Like the TTS-Suite's catalog |
 | POST | `/unload` | Unload the CPU models (the GPU workers: `/gpu/release`) |
 | GET | `/gpu/holders` | The GPU workers that run: `item`, `gpu_uuids` (the card it was started on), `memory_mib` (what the GPU worker took when loading), `busy` |
 | POST | `/gpu/release` | JSON `{"items": ["gpu-worker", "diarize-worker"] \| "all", "force": false, "reason": "…"}`. One result per item: `released` (the process is proven ended), `not_running`, `busy` (left alone without force), `failed`. `200`, `409` when one is busy, `500` when one failed. With `force` a running transcription is told the reason and counts as "GPU unavailable": with `device=auto` it goes on on the CPU, with `device=cuda` it answers `503` with the reason. The common release API of the suites, used by [GPU-Orc](https://github.com/Peuqui/GPU-Orc) |
-| POST, GET | `/burn-in` | `POST` (form: `file`, optional `entries`, a JSON list of `{"engine", "model"}`) starts the measurement of the VRAM models need, in the background; `GET` shows how it stands (`running`, `step`, `results`, `error`). `409` while one runs or the GPU transcribes |
-| GET | `/`, `/ui/` | Web page: status, configuration, test |
+| POST, GET | `/burn-in` | `POST` with JSON `{"engine", "model"}` starts the measurement of one model in the background, `202`; `GET` shows how it stands (`running`, `engine`, `model`, `peak_mib`, `error`). `409` (`burn_in_running`, `gpu_busy`) while one runs or the GPU is transcribing. Like the TTS-Suite's |
+| GET | `/`, `/ui/` | Web page: engines, configuration, test |
 
 `POST /transcribe` takes a multipart form:
 
@@ -97,7 +98,9 @@ and survive rebuilds. The container restarts with Docker (`restart: unless-stopp
 The answer is JSON with `text`, the time taken, the device and the engine used and its model (`model` for
 Whisper, `quality` for Parakeet); after a fallback also `fallback`, the list of what could not take the
 request, each with `tried` and `reason`. Errors: `400` for a missing file or an invalid value, `503` when
-the GPU has no room for the model (or is busy with another one), `500` otherwise.
+the GPU has no room for the model (or is busy with another one), `500` otherwise. A refusal is JSON `{"error": <code>, "detail": <text>}`,
+like the TTS-Suite's; the codes are `bad_request`, `gpu_unavailable`, `gpu_busy`, `burn_in_running`, `decode_failed` and
+`transcription_failed`.
 
 ```
 curl -F file=@speech.webm -F device=cuda http://localhost:5080/transcribe
@@ -139,7 +142,7 @@ Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt 
 | `PARAKEET_BATCH` | `1` | How many chunks Parakeet recognizes at once. At 1 a long recording needs no more VRAM than one chunk, and the burn-in (with a recording of at least `PARAKEET_CHUNK_S`) measures exactly that bound; above 1 the need grows with the length, up to that multiple |
 | `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision: estimates, replaced by what a burn-in measured |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Where the measured needs are kept (volume `stt_suite_state`); delete it to return to the estimates |
-| `STT_VRAM_MARGIN_MIB` | `256` | Free VRAM kept on a card beyond what a model needs; also set on the web page |
+| `STT_HEADROOM_MIB` | `256` | The margin: free VRAM kept on a card beyond what a model needs; also set on the web page |
 
 Available models: `tiny`, `base`, `small`, `medium`, `large-v3`.
 
