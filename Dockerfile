@@ -65,6 +65,5 @@ WORKDIR /app
 
 EXPOSE 5052
 
-# 1 worker + 4 threads: single model per device; health checks and GPU-Orc's /gpu/holders (asked while this
-# service places a worker and waits for GPU-Orc's /status) work during a transcription
-CMD ["gunicorn", "--bind", "0.0.0.0:5052", "--timeout", "0", "--workers", "1", "--threads", "4", "server:app"]
+# 1 worker + 2 threads: single model per device, health checks work during transcription
+CMD ["gunicorn", "--bind", "0.0.0.0:5052", "--timeout", "0", "--workers", "1", "--threads", "2", "server:app"]

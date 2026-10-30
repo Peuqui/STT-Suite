@@ -175,33 +175,6 @@ def _read_vram_tables() -> tuple[dict, dict]:
 _VRAM_MIB, _VRAM_MEASURED = _read_vram_tables()
 
 
-# The GPU-Orc of this machine (from the container: http://host.docker.internal:5070 with its token): its
-# available_mib per card caps what nvidia-smi shows as free. A vLLM model may fill its share of a card
-# while it computes; a worker placed in that gap left the model without memory (25.10.2026). Empty =
-# no GPU-Orc on this machine, nvidia-smi alone.
-_GPU_ORC_URL = os.environ.get("STT_GPU_ORC_URL", "")
-_GPU_ORC_TOKEN_FILE = os.environ.get("STT_GPU_ORC_TOKEN_FILE", "")
-_GPU_ORC_STATUS_TIMEOUT_S = 30  # GPU-Orc asks every consumer of the cards, this service included
-
-
-def _gpu_orc_room() -> dict[str, int]:
-    """What another program may still take per card UUID, as GPU-Orc says. RuntimeError with the
-    reason when GPU-Orc does not answer usably or cannot say (a consumer did not report)."""
-    import urllib.request
-    request = urllib.request.Request(f"{_GPU_ORC_URL.rstrip('/')}/status")
-    try:
-        if _GPU_ORC_TOKEN_FILE:
-            request.add_header("Authorization", "Bearer " + Path(_GPU_ORC_TOKEN_FILE).read_text(encoding="utf-8").strip())
-        with urllib.request.urlopen(request, timeout=_GPU_ORC_STATUS_TIMEOUT_S) as response:
-            status = json.load(response)
-        room = {gpu["uuid"]: gpu["available_mib"] for gpu in status["gpus"]}
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise RuntimeError(f"GPU-Orc at {_GPU_ORC_URL} gave no usable answer: {error!r}") from error
-    if None in room.values():
-        raise RuntimeError(f"GPU-Orc cannot say what is free: {status.get('errors')}")
-    return room
-
-
 def _vram_needed_mib(engine: str, model: str, quality: str) -> int:
     """Free VRAM a card needs for this model, with the margin: a Whisper size or a Parakeet precision."""
     return _VRAM_MIB[engine][quality if engine == "parakeet" else model] + _config["vram_margin_mib"]
@@ -489,7 +462,6 @@ def _find_best_gpu(min_vram_mib: int,
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5, check=True,
         )
-        room = _gpu_orc_room() if _GPU_ORC_URL else None
         best: tuple[int, str] | None = None
         best_free, best_used = 0, float("inf")
         for line in result.stdout.strip().split("\n"):
@@ -497,8 +469,6 @@ def _find_best_gpu(min_vram_mib: int,
             if len(parts) >= 5:
                 idx, uuid = int(parts[0]), parts[1]
                 free, used = int(parts[2]), int(parts[3])
-                if room is not None:
-                    free = min(free, room[uuid])
                 name = parts[4]
                 cap = float(parts[5]) if len(parts) >= 6 else 0.0
                 print(f"[{tag}]   GPU {idx}: {name} (sm_{cap}) — {free} MiB free, "
@@ -517,7 +487,7 @@ def _find_best_gpu(min_vram_mib: int,
         else:
             print(f"[{tag}] No GPU with >= {min_vram} MiB free VRAM", flush=True)
         return best
-    except (subprocess.SubprocessError, OSError, ValueError, KeyError, RuntimeError) as e:
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
         print(f"[{tag}] GPU detection failed: {e}", flush=True)
         return None
 
@@ -638,32 +608,19 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
 
 
 def _free_per_card_mib() -> dict[int, int]:
-    """Free VRAM (MiB) per card, by nvidia-smi index — with a GPU-Orc, no more than it says another
-    program may take; empty without an NVIDIA driver. RuntimeError when GPU-Orc cannot say."""
+    """Free VRAM (MiB) per card, by nvidia-smi index; empty without an NVIDIA driver."""
     import subprocess
     try:
-        result = subprocess.run(["nvidia-smi", "--query-gpu=index,uuid,memory.free", "--format=csv,noheader,nounits"],
+        result = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
                                 capture_output=True, text=True, timeout=5, check=True)
     except FileNotFoundError:
         return {}  # no NVIDIA driver in this container: no card has anything free
-    room = _gpu_orc_room() if _GPU_ORC_URL else None
-    free = {}
-    for index, uuid, mib in (line.split(",") for line in result.stdout.strip().splitlines()):
-        free[int(index)] = int(mib) if room is None else min(int(mib), room[uuid.strip()])
-    return free
+    return {int(index): int(free) for index, free in (line.split(",") for line in result.stdout.strip().splitlines())}
 
 
 def _refusal(need: int, free_mib: int) -> str:
     return (f"needs {need} MiB free ({_config['vram_margin_mib']} MiB margin included), "
             f"the card with the most has {free_mib} MiB")
-
-
-def _no_room(need: int) -> str:
-    """Why no card takes the model: the most free VRAM, or why nobody can say."""
-    try:
-        return _refusal(need, max(_free_per_card_mib().values(), default=0))
-    except RuntimeError as error:
-        return str(error)
 
 
 def _start_gpu_worker(engine: str, model: str, quality: str, check_fit: bool = True) -> str | None:
@@ -677,7 +634,7 @@ def _start_gpu_worker(engine: str, model: str, quality: str, check_fit: bool = T
     with _placement_lock():
         selected = _find_best_gpu(min_vram_mib=need, tag="Parakeet" if engine == "parakeet" else "Whisper")
         if selected is None:
-            return _no_room(need)
+            return _refusal(need, max(_free_per_card_mib().values(), default=0))
         name = f"parakeet-{quality}" if engine == "parakeet" else model
         compute = "" if engine == "parakeet" else _detect_gpu_compute(selected[0])
         if not _spawn_gpu_worker(selected, name, compute, engine, quality):
@@ -689,10 +646,7 @@ def _room_after_release(need: int) -> str | None:
     """Whether a card has `need` MiB free once the loaded worker has let go of its memory; None when
     it does, else the reason. Decided from the table before the worker is stopped, so a model that
     cannot be loaded never costs the one that is."""
-    try:
-        free = _free_per_card_mib()
-    except RuntimeError as error:
-        return str(error)
+    free = _free_per_card_mib()
     if _gpu_device_index in free:
         free[_gpu_device_index] += _gpu_footprint_mib  # what it took when loaded: no more than it holds now
     best = max(free.values(), default=0)
