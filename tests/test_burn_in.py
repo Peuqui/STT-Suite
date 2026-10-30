@@ -83,6 +83,12 @@ def test_no_burn_in_while_the_gpu_transcribes(client, monkeypatch: pytest.Monkey
     assert (answer.status_code, answer.get_json()["error"]) == (409, "gpu_busy")
 
 
+def test_no_burn_in_while_a_big_model_loads(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "_loading_refusal", lambda: "DeepSeek-vllm is loading")
+    answer = client.post("/burn-in", json={"engine": "whisper", "model": "tiny"})
+    assert (answer.status_code, answer.get_json()["error"]) == (409, "model_loading")
+
+
 def test_the_peak_replaces_the_estimate_and_the_catalog_shows_it(client, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "_measure", lambda engine, model: 2000)
     monkeypatch.setattr(server, "_kill_gpu_worker", lambda: None)

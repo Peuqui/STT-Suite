@@ -99,7 +99,7 @@ The answer is JSON with `text`, the time taken, the device and the engine used a
 Whisper, `quality` for Parakeet); after a fallback also `fallback`, the list of what could not take the
 request, each with `tried` and `reason`. Errors: `400` for a missing file or an invalid value, `503` when
 the GPU has no room for the model (or is busy with another one), `500` otherwise. A refusal is JSON `{"error": <code>, "detail": <text>}`,
-like the TTS-Suite's; the codes are `bad_request`, `gpu_unavailable`, `gpu_busy`, `burn_in_running`, `decode_failed` and
+like the TTS-Suite's; the codes are `bad_request`, `gpu_unavailable`, `gpu_busy`, `model_loading`, `burn_in_running`, `decode_failed` and
 `transcription_failed`.
 
 ```
@@ -131,6 +131,7 @@ Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt 
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper size on the GPU |
 | `STT_GPU_TTL_MINUTES` | `30` | Idle minutes until the GPU worker is stopped and its VRAM freed; `0` keeps it |
 | `STT_GPU_PLACEMENT_LOCK` | unset | Lock file (inside the container, e.g. `/gpu-placement/placement.lock`, in the directory `STT_GPU_PLACEMENT_DIR` of the host mounted there) that this service and the TTS-Suite lock with `flock` while they choose a card and load onto it. Two services starting together then do not pick the same card. Unset = off; the file must exist and be writable |
+| `STT_GPU_ORC_URL` | unset | The GPU-Orc of this machine (from the container `http://host.docker.internal:5070`, with `STT_GPU_ORC_DIR` and `STT_GPU_ORC_TOKEN_FILE`): before a model goes on a card the suite asks `GET /loading`. While a big model loads or without a usable answer the GPU counts as unavailable: `device=auto` goes on down to the CPU, `device=cuda` answers `503` |
 | `STT_LANGUAGE` | `de` | Default language (`auto` detects it) |
 | `STT_EAGER_LOAD` | `1` | Load the CPU model at start |
 | `STT_CONFIG_FILE` | `/state/config.json` | Where settings changed via `/config` are kept (volume `stt_suite_state`). The environment only gives the first defaults; once this file exists it wins. Delete it to return to the environment |
