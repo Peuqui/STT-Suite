@@ -60,6 +60,7 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/u
 # Copy server
 COPY server.py /app/server.py
 COPY vram_mib.json /app/vram_mib.json
+COPY burn_in_speech.wav /app/burn_in_speech.wav
 COPY ui /app/ui
 WORKDIR /app
 

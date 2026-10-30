@@ -15,7 +15,7 @@ export async function json(path, { method = 'GET', body } = {}) {
     body: body === undefined || body instanceof FormData ? body : JSON.stringify(body),
   })
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new ApiError(response.status, data.error ?? response.statusText, response.status === 409)
+  if (!response.ok) throw new ApiError(response.status, data.detail ?? response.statusText, response.status === 409)
   return data
 }
 
@@ -24,11 +24,12 @@ const RELEASE_REASON = 'STT-Suite page'
 
 export const service = {
   status: () => json('../status'),
+  engines: () => json('../engines'),
   config: () => json('../config'),
   saveConfig: (config) => json('../config', { method: 'POST', body: config }),
   unloadCpu: () => json('../unload', { method: 'POST' }),
   releaseGpu: (force) => json('../gpu/release', { method: 'POST', body: { items: 'all', force, reason: RELEASE_REASON } }),
   burnIn: () => json('../burn-in'),
-  startBurnIn: (form) => json('../burn-in', { method: 'POST', body: form }),
+  startBurnIn: (engine, model) => json('../burn-in', { method: 'POST', body: { engine, model } }),
   transcribe: (form) => json('../transcribe', { method: 'POST', body: form }),
 }

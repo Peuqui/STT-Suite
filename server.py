@@ -32,10 +32,16 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
 app = Flask(__name__)
+
+
+def _error(status: int, code: str, detail: str) -> tuple:
+    """A refused request, shaped like the TTS-Suite's: a code for programs, a text for people."""
+    return jsonify({"error": code, "detail": detail}), status
 
 # ── Configuration (mutable at runtime via /config) ───────────
 
@@ -47,7 +53,7 @@ PARAKEET_QUALITIES = ["fp32", "int8"]
 
 _default_model = os.environ.get("WHISPER_MODEL", "medium")
 
-_config = {
+_config: dict[str, Any] = {
     "cpu_model": os.environ.get("WHISPER_CPU_MODEL", _default_model),
     "gpu_model": os.environ.get("WHISPER_GPU_MODEL", _default_model),
     "cpu_compute": os.environ.get("WHISPER_CPU_COMPUTE", "int8"),
@@ -82,8 +88,8 @@ _config = {
     # Parakeet precision), each one switched on or off. None until the first start fills it (see
     # _default_auto_chain).
     "auto_chain": None,
-    # Free VRAM (MiB) a card must keep beyond what a model needs before it is loaded there.
-    "vram_margin_mib": int(os.environ.get("STT_VRAM_MARGIN_MIB", "256")),
+    # Free VRAM (MiB) a card must keep beyond what a model takes before it is loaded there.
+    "headroom_mib": int(os.environ.get("STT_HEADROOM_MIB", "256")),
 }
 
 # Settings changed through /config survive a restart: the container cannot write the
@@ -176,8 +182,9 @@ _VRAM_MIB, _VRAM_MEASURED = _read_vram_tables()
 
 
 def _vram_needed_mib(engine: str, model: str, quality: str) -> int:
-    """Free VRAM a card needs for this model, with the margin: a Whisper size or a Parakeet precision."""
-    return _VRAM_MIB[engine][quality if engine == "parakeet" else model] + _config["vram_margin_mib"]
+    """Free VRAM a card needs for this model, a Whisper size or a Parakeet precision: what it takes plus
+    the headroom. The one place the headroom is added."""
+    return _VRAM_MIB[engine][quality if engine == "parakeet" else model] + _config["headroom_mib"]
 
 
 # ── Speaker diarization (optional, own worker on its own GPU) ─
@@ -226,19 +233,19 @@ def _load_cpu_model(model_name: str):
     print(f"[STT] Model loaded on cpu in {time.time() - t0:.1f}s", flush=True)
 
 
-def _ensure_cpu_model(model_name: str):
+def _ensure_cpu_model(model_name: str) -> Any:
     """The Whisper CPU model of this size; the caller holds _cpu_lock. Loads when nothing is
     loaded or another size is."""
     if _model_cpu is None or _cpu_model_name != model_name:
         _load_cpu_model(model_name)
+    return _model_cpu
 
 
 def _transcribe_cpu(audio_path: str, language: str, return_segments: bool,
                     model_name: str) -> dict:
     """Transcribe using the Whisper CPU model of this size (main process)."""
     with _cpu_lock:
-        _ensure_cpu_model(model_name)
-        model = _model_cpu
+        model = _ensure_cpu_model(model_name)
 
     t0 = time.time()
     segments, info = model.transcribe(
@@ -254,7 +261,7 @@ def _transcribe_cpu(audio_path: str, language: str, return_segments: bool,
     )
     # Materialise once — ``segments`` is a generator; the timestamps are what
     # the speaker merge needs.
-    seg_list = []
+    seg_list: list[tuple[float, float, str]] = []
     text_parts = []
     for s in segments:
         text_parts.append(s.text)
@@ -582,7 +589,7 @@ def _gpu_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing.Que
             )
             # Materialise once — ``segments`` is a generator, a second pass
             # would be empty. Timestamps are what the speaker merge needs.
-            seg_list = []
+            seg_list: list[tuple[float, float, str]] = []
             text_parts = []
             for s in segments:
                 text_parts.append(s.text)
@@ -619,7 +626,7 @@ def _free_per_card_mib() -> dict[int, int]:
 
 
 def _refusal(need: int, free_mib: int) -> str:
-    return (f"needs {need} MiB free ({_config['vram_margin_mib']} MiB margin included), "
+    return (f"needs {need} MiB free ({_config['headroom_mib']} MiB headroom included), "
             f"the card with the most has {free_mib} MiB")
 
 
@@ -790,6 +797,11 @@ class GpuWithdrawn(GpuUnavailable):
     gets no GPU any more, not even with another model."""
 
 
+def _models_of(engine: str) -> list[str]:
+    """What an engine offers to choose: Whisper sizes, or Parakeet precisions."""
+    return PARAKEET_QUALITIES if engine == "parakeet" else AVAILABLE_MODELS
+
+
 def _model_name(engine: str, model: str, quality: str) -> str:
     """How a loaded model is named: a Whisper size, or "parakeet-<precision>"."""
     return f"parakeet-{quality}" if engine == "parakeet" else model
@@ -822,6 +834,8 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
 
         # Send job
         _gpu_busy = True
+        results = _gpu_result_queue
+        assert _gpu_request_queue is not None and results is not None  # the worker is alive here
         _gpu_request_queue.put({
             "audio_path": audio_path,
             "language": language,
@@ -834,7 +848,7 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
 
     # Wait for result (outside lock so CPU requests aren't blocked)
     try:
-        result = _gpu_result_queue.get(timeout=_GPU_RESULT_TIMEOUT_S)
+        result = results.get(timeout=_GPU_RESULT_TIMEOUT_S)
         if "withdrawn" in result:
             # The card was taken back for something else (GPU-Orc before a model load): to the plan this
             # is "no GPU now", so device=auto goes on on the CPU and device=cuda answers 503 with the reason.
@@ -885,8 +899,14 @@ def _decode_to_wav16k(src_path: str) -> str:
 
 # ── Burn-in: measuring what a model needs ───────────────────
 
-# Progress of the measurement the web page starts; one at a time, and while it runs the GPU is its own.
-_burn_in: dict = {"running": False, "step": "", "results": [], "error": None}
+# Speech of a good minute that comes with the service, so a burn-in needs no file: more than the longest
+# piece Parakeet works on. Spoken by Piper's Thorsten voice from the text of the TTS-Suite's burn-in.
+_BURN_IN_RECORDING = Path(os.environ.get("STT_BURN_IN_RECORDING", Path(__file__).parent / "burn_in_speech.wav"))
+_BURN_IN_LANGUAGE = "de"
+
+# The burn-in under way or the last one, for the page; one at a time, and while it runs the GPU is its own.
+# `peak_mib` is the peak so far, at the end what the model takes.
+_burn_in: dict = {"running": False, "engine": None, "model": None, "peak_mib": 0, "error": None}
 
 
 def _used_per_card_mib() -> dict[int, int]:
@@ -897,9 +917,9 @@ def _used_per_card_mib() -> dict[int, int]:
     return {int(index): int(used) for index, used in (line.split(",") for line in output.strip().splitlines())}
 
 
-def _measure(engine: str, model: str, wav_path: str, language: str) -> dict:
-    """Load this model on a GPU, transcribe the file, and take the highest rise of the used memory on the
-    card it sits on (sampled every 0.1 s). Another program growing on that card meanwhile counts too."""
+def _measure(engine: str, model: str) -> int:
+    """Load this model on a GPU, transcribe the recording, and take the highest rise of the used memory
+    on the card it sits on (sampled every 0.1 s). Another program growing on that card meanwhile counts too."""
     quality = model if engine == "parakeet" else _config["gpu_quality"]
     whisper_size = _config["gpu_model"] if engine == "parakeet" else model
     with _gpu_lock:
@@ -911,24 +931,27 @@ def _measure(engine: str, model: str, wav_path: str, language: str) -> dict:
     peaks = dict(before)
     stop = threading.Event()
 
+    def rise() -> int:
+        return 0 if _gpu_device_index is None else peaks[_gpu_device_index] - before[_gpu_device_index]
+
     def sample() -> None:
         while not stop.is_set():
             for index, used in _used_per_card_mib().items():
                 peaks[index] = max(peaks[index], used)
+            _burn_in["peak_mib"] = rise()
             stop.wait(0.1)
 
     sampler = threading.Thread(target=sample, daemon=True)
     sampler.start()
     try:
-        result = _transcribe_gpu(wav_path, language, False, engine, whisper_size, quality, measuring=True)
+        result = _transcribe_gpu(str(_BURN_IN_RECORDING), _BURN_IN_LANGUAGE, False, engine, whisper_size, quality,
+                                 measuring=True)
     finally:
         stop.set()
         sampler.join()
     if "error" in result:
         raise RuntimeError(result["error"])
-    card = _gpu_device_index
-    return {"engine": engine, "model": model, "measured_mib": peaks[card] - before[card], "card": card,
-            "seconds": result["time"]}
+    return rise()
 
 
 def _save_measured(engine: str, model: str, mib: int) -> None:
@@ -941,23 +964,18 @@ def _save_measured(engine: str, model: str, mib: int) -> None:
     tmp.replace(_VRAM_MEASURED_FILE)
 
 
-def _burn_in_job(wav_path: str, entries: list[tuple[str, str]], language: str) -> None:
-    """The measurement, in a thread of its own: one model after the other."""
+def _burn_in_job(engine: str, model: str) -> None:
+    """The measurement, in a thread of its own; the peak becomes what the model takes."""
     try:
-        for engine, model in entries:
-            _burn_in["step"] = f"{engine} {model}"
-            result = _measure(engine, model, wav_path, language)
-            _save_measured(engine, model, result["measured_mib"])
-            _burn_in["results"].append(result)
-            print(f"[Burn-in] {engine} {model}: {result['measured_mib']} MiB on card {result['card']}", flush=True)
+        _burn_in["peak_mib"] = _measure(engine, model)
+        _save_measured(engine, model, _burn_in["peak_mib"])
+        print(f"[Burn-in] {engine} {model}: {_burn_in['peak_mib']} MiB", flush=True)
     except Exception as error:  # noqa: BLE001 — the burn-in shows any failure on its page instead of dying
         _burn_in["error"] = str(error)
         print(f"[Burn-in] failed: {error}", flush=True)
     finally:
         with _gpu_lock:
             _kill_gpu_worker()
-        Path(wav_path).unlink(missing_ok=True)
-        _burn_in["step"] = ""
         _burn_in["running"] = False
 
 
@@ -1155,6 +1173,7 @@ def _diarize_submit(audio_path: str, num_speakers: int = 0) -> bool:
     with _diarize_lock:
         if (_diarize_process is None or not _diarize_process.is_alive()) and not _start_diarize_worker():
             return False
+        assert _diarize_request_queue is not None  # the worker is alive here
         _diarize_request_queue.put({"audio_path": audio_path,
                                     "num_speakers": num_speakers})
         _diarize_busy = True
@@ -1456,7 +1475,7 @@ def transcribe():
                       (default: cpu_quality / gpu_quality, by device)
     """
     if "file" not in request.files:
-        return jsonify({"error": "No file provided"}), 400
+        return _error(400, "bad_request", "No file provided")
 
     audio_file = request.files["file"]
     device = request.form.get("device", "cpu")
@@ -1476,9 +1495,9 @@ def transcribe():
     for name, value, allowed in (("device", device, DEVICES), ("engine", engine, ENGINES),
                                  ("model", model, AVAILABLE_MODELS), ("quality", quality, PARAKEET_QUALITIES)):
         if value is not None and value not in allowed:
-            return jsonify({"error": f"Invalid {name}: {value}. Use one of {allowed}"}), 400
+            return _error(400, "bad_request", f"Invalid {name}: {value}. Use one of {allowed}")
     if device == "auto" and (engine or model or quality):
-        return jsonify({"error": "engine, model and quality do not apply to device=auto: it follows the auto list"}), 400
+        return _error(400, "bad_request", "engine, model and quality do not apply to device=auto: it follows the auto list")
     plan = _plan(device, engine, model, quality)
 
     _log_client("transcribe", device=device, engine=plan[0]["engine"], diarize=str(diarize))
@@ -1499,7 +1518,7 @@ def transcribe():
         if diarize or parakeet_possible:
             work_path = _decode_to_wav16k(tmp_path)
             if parakeet_possible and work_path == tmp_path:
-                return jsonify({"error": "Audio could not be decoded to 16 kHz WAV"}), 500
+                return _error(500, "decode_failed", "Audio could not be decoded to 16 kHz WAV")
 
         # Queue diarization FIRST so it runs on its own card while Whisper
         # transcribes — the two jobs never touch, so the wall-clock cost of
@@ -1518,9 +1537,9 @@ def transcribe():
             # real errors. Which device to use instead is the client's choice (or `device=auto`).
             if diarize_queued:
                 _diarize_collect(timeout=10)  # drain, worker already ran
-            return jsonify({"error": f"GPU unavailable: {unavailable}"}), 503
+            return _error(503, "gpu_unavailable", f"GPU unavailable: {unavailable}")
         if "error" in result:
-            return jsonify({"error": result["error"]}), 500
+            return _error(500, "transcription_failed", result["error"])
 
         if diarize_queued:
             dia = _diarize_collect(timeout=_GPU_RESULT_TIMEOUT_S)
@@ -1574,10 +1593,6 @@ def status():
         "engines": ENGINES,
         "parakeet_qualities": PARAKEET_QUALITIES,
         "devices": DEVICES,
-        # Free VRAM a card needs per model before it is loaded there (the margin comes on top), and which
-        # of those a burn-in measured on this machine (the others are estimates).
-        "vram_needed_mib": _VRAM_MIB,
-        "vram_measured": _VRAM_MEASURED,
     }
 
     if _last_gpu_request > 0:
@@ -1590,47 +1605,46 @@ def status():
     return jsonify(result)
 
 
+@app.route("/engines", methods=["GET"])
+def engines():
+    """Every model of every engine: on which devices it is loaded, what a card needs free for it (what it
+    takes plus the headroom; the one figure a client plans with) and whether a burn-in measured that on
+    this machine (else it is an estimate)."""
+    loaded = _loaded()
+
+    def row(engine: str, model: str) -> dict:
+        name = {"engine": engine, "model": _model_name(engine, model, model)}
+        return {"engine": engine, "model": model,
+                "loaded_on": [device for device, held in loaded.items() if held == name],
+                "needed_mib": _vram_needed_mib(engine, model, model),
+                "measured": model in _VRAM_MEASURED.get(engine, {})}
+
+    return jsonify([row(engine, model) for engine in ENGINES for model in _models_of(engine)])
+
+
 @app.route("/burn-in", methods=["GET"])
 def burn_in_status():
-    """How the measurement stands: running, the model it works on, the results so far, an error."""
+    """How the measurement stands: running, the model it works on, the peak so far, an error."""
     return jsonify(_burn_in)
 
 
 @app.route("/burn-in", methods=["POST"])
 def burn_in_start():
-    """Measure what models need on a GPU. Form data: `file` (speech of a minute or more, so that the
-    longest piece Parakeet works on is in it) and optionally `entries`, a JSON list of
-    {"engine", "model"} (default: every Whisper size and Parakeet precision). It runs in the
-    background (GET /burn-in); each result replaces the estimate in the table. The GPU model in memory
-    is released for it, and nothing else uses the GPU meanwhile (409 for a second burn-in or while the
-    GPU is transcribing)."""
-    if "file" not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-    try:
-        requested = json.loads(request.form["entries"]) if "entries" in request.form else None
-    except ValueError:
-        return jsonify({"error": "entries is no JSON"}), 400
-    if requested is None:
-        entries = [("whisper", size) for size in AVAILABLE_MODELS] + [("parakeet", quality) for quality in PARAKEET_QUALITIES]
-    else:
-        entries = [(entry.get("engine"), entry.get("model")) for entry in requested]
-        for engine, model in entries:
-            if engine not in ENGINES or model not in (PARAKEET_QUALITIES if engine == "parakeet" else AVAILABLE_MODELS):
-                return jsonify({"error": f"Invalid entry: {engine} {model}"}), 400
+    """Measure what one model takes on a GPU: JSON {"engine", "model"}, a Whisper size or a Parakeet
+    precision. It transcribes the recording that comes with the service, in the background (GET
+    /burn-in); the peak replaces the estimate. The GPU model in memory is released for it, and nothing
+    else uses the GPU meanwhile (409 for a second burn-in or while the GPU is transcribing)."""
+    body = request.get_json(silent=True)
+    engine, model = (body.get("engine"), body.get("model")) if isinstance(body, dict) else (None, None)
+    if engine not in ENGINES or model not in _models_of(engine):
+        return _error(400, "bad_request", f"Invalid engine or model: {engine} {model}")
     if _burn_in["running"]:
-        return jsonify({"error": "A burn-in is running"}), 409
+        return _error(409, "burn_in_running", "a burn-in is running, one at a time")
     if _gpu_busy:
-        return jsonify({"error": "The GPU is transcribing"}), 409
-    _burn_in.update(running=True, step="", results=[], error=None)
-    suffix = Path(request.files["file"].filename or "audio.wav").suffix or ".wav"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        request.files["file"].save(tmp)
-    wav_path = _decode_to_wav16k(tmp.name)
-    if wav_path != tmp.name:
-        Path(tmp.name).unlink(missing_ok=True)
-    threading.Thread(target=_burn_in_job, args=(wav_path, entries, _config["language"]), daemon=True,
-                     name="burn-in").start()
-    return jsonify({"started": [f"{engine} {model}" for engine, model in entries]}), 202
+        return _error(409, "gpu_busy", "the GPU is transcribing")
+    _burn_in.update(running=True, engine=engine, model=model, peak_mib=0, error=None)
+    threading.Thread(target=_burn_in_job, args=(engine, model), daemon=True, name="burn-in").start()
+    return jsonify(_burn_in), 202
 
 
 @app.route("/unload", methods=["POST"])
@@ -1638,7 +1652,7 @@ def unload():
     """Unload the CPU models. The GPU workers are released through /gpu/release only (one way)."""
     global _model_cpu, _parakeet_cpu, _parakeet_cpu_quality
     if request.args:
-        return jsonify({"error": "/unload takes no parameters; GPU workers: POST /gpu/release"}), 400
+        return _error(400, "bad_request", "/unload takes no parameters; GPU workers: POST /gpu/release")
     unloaded = []
     _log_client("unload")
     if _model_cpu is not None:
@@ -1688,15 +1702,15 @@ def gpu_release():
     """
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or set(body) - {"items", "force", "reason"}:
-        return jsonify({"error": "body: {items, force, reason}"}), 400
+        return _error(400, "bad_request", "body: {items, force, reason}")
     items, force, reason = body.get("items"), body.get("force", False), body.get("reason")
     if items == "all":
         items = list(_GPU_ITEMS)
     if (not isinstance(items, list) or not items or len(set(items)) != len(items)
             or any(item not in _GPU_ITEMS for item in items)):
-        return jsonify({"error": f'items: "all" or a list of {list(_GPU_ITEMS)}'}), 400
+        return _error(400, "bad_request", f'items: "all" or a list of {list(_GPU_ITEMS)}')
     if not isinstance(force, bool) or not isinstance(reason, str) or not reason.strip():
-        return jsonify({"error": "force must be true or false, and reason is required"}), 400
+        return _error(400, "bad_request", "force must be true or false, and reason is required")
     _log_client("gpu/release", items=",".join(items), force=str(force), reason=reason)
     results = [_release_gpu_item(item, force, reason) for item in items]
     outcomes = {result["outcome"] for result in results}
@@ -1733,7 +1747,7 @@ _NUMBERS = {
     "gpu_ttl_minutes": lambda value: max(0, int(value)),
     "beam_size": lambda value: max(1, min(20, int(value))),
     "num_speakers": lambda value: max(0, min(10, int(value))),
-    "vram_margin_mib": lambda value: max(0, int(value)),
+    "headroom_mib": lambda value: max(0, int(value)),
 }
 _FLAGS = ("vad_filter", "condition_on_previous_text")
 _TEXTS = ("language", "initial_prompt")
@@ -1748,8 +1762,7 @@ def _valid_auto_chain(chain: object) -> str | None:
     for entry in chain:
         if not isinstance(entry, dict) or set(entry) != {"device", "engine", "model", "enabled"}:
             return f"auto_chain entry {entry!r}: needs device, engine, model and enabled"
-        models = PARAKEET_QUALITIES if entry["engine"] == "parakeet" else AVAILABLE_MODELS
-        if (entry["device"] not in ("cpu", "cuda") or entry["engine"] not in ENGINES or entry["model"] not in models
+        if (entry["device"] not in ("cpu", "cuda") or entry["engine"] not in ENGINES or entry["model"] not in _models_of(entry["engine"])
                 or not isinstance(entry["enabled"], bool)):
             return (f"auto_chain entry {entry!r}: device is cpu or cuda, engine one of {ENGINES}, model a Whisper "
                     f"size {AVAILABLE_MODELS} or a Parakeet precision {PARAKEET_QUALITIES}, enabled true or false")
@@ -1762,22 +1775,21 @@ def config_endpoint():
     outside its set, is answered with 400 and nothing is changed."""
     if request.method == "GET":
         return jsonify({**_config, "available_models": AVAILABLE_MODELS, "engines": ENGINES,
-                        "parakeet_qualities": PARAKEET_QUALITIES, "devices": DEVICES,
-                        "vram_needed_mib": _VRAM_MIB, "vram_measured": _VRAM_MEASURED})
+                        "parakeet_qualities": PARAKEET_QUALITIES, "devices": DEVICES})
 
     data = request.get_json(silent=True) or {}
     unknown = sorted(set(data) - set(_CHOICES) - set(_NUMBERS) - set(_FLAGS) - set(_TEXTS) - {"auto_chain"})
     if unknown:
-        return jsonify({"error": f"Unknown settings: {unknown}"}), 400
+        return _error(400, "bad_request", f"Unknown settings: {unknown}")
     for key, allowed in _CHOICES.items():
         if key in data and data[key] not in allowed:
-            return jsonify({"error": f"Invalid {key}: {data[key]!r}. Use one of {allowed}"}), 400
+            return _error(400, "bad_request", f"Invalid {key}: {data[key]!r}. Use one of {allowed}")
     if "auto_chain" in data and (invalid := _valid_auto_chain(data["auto_chain"])):
-        return jsonify({"error": invalid}), 400
+        return _error(400, "bad_request", invalid)
     try:
         received = {key: _NUMBERS[key](data[key]) for key in _NUMBERS if key in data}
     except (TypeError, ValueError) as error:
-        return jsonify({"error": f"Not a number: {error}"}), 400
+        return _error(400, "bad_request", f"Not a number: {error}")
     received |= {key: data[key] for key in _CHOICES if key in data}
     received |= {key: bool(data[key]) for key in _FLAGS if key in data}
     received |= {key: str(data[key]) for key in _TEXTS if key in data}

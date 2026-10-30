@@ -52,6 +52,8 @@ services:
       # Lock file shared with the TTS-Suite: choosing a card and loading the model onto it happens one
       # program at a time, so two services starting together do not pick the same card. Unset = off.
       - STT_GPU_PLACEMENT_LOCK=${STT_GPU_PLACEMENT_LOCK:-}
+      # Free VRAM (MiB) kept on a card beyond what a model takes; also set on the web page.
+      - STT_HEADROOM_MIB=${STT_HEADROOM_MIB:-256}
     volumes:
       # Persistent HuggingFace model cache
       - stt_suite_models:/root/.cache/huggingface
