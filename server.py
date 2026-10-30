@@ -404,6 +404,31 @@ _gpu_lock = threading.Lock()
 # until its model sits in VRAM, so the next one sees the real free memory instead of choosing the same
 # card at the same moment. Unset = no other program to coordinate with.
 _PLACEMENT_LOCK_FILE = os.environ.get("STT_GPU_PLACEMENT_LOCK", "")
+
+# The GPU-Orc of this machine (from the container: http://host.docker.internal:5070 with its token). Before
+# a model goes on a card it says whether a big model is loading: the cards then look emptier than they are
+# about to be, and a worker placed there would take the model's room. The free VRAM still comes from
+# nvidia-smi alone. Empty = no GPU-Orc on this machine.
+_GPU_ORC_URL = os.environ.get("STT_GPU_ORC_URL", "")
+_GPU_ORC_TOKEN_FILE = os.environ.get("STT_GPU_ORC_TOKEN_FILE", "")
+_GPU_ORC_LOADING_TIMEOUT_S = 5  # it answers at once, without asking anyone
+
+
+def _loading_refusal() -> str | None:
+    """Why nothing may go on a card right now, None when it may: a big model is loading, or GPU-Orc gives
+    no usable answer (nobody can then say that the cards really are as empty as they look)."""
+    if not _GPU_ORC_URL:
+        return None
+    import urllib.request
+    request = urllib.request.Request(f"{_GPU_ORC_URL.rstrip('/')}/loading")
+    try:
+        if _GPU_ORC_TOKEN_FILE:
+            request.add_header("Authorization", "Bearer " + Path(_GPU_ORC_TOKEN_FILE).read_text(encoding="utf-8").strip())
+        with urllib.request.urlopen(request, timeout=_GPU_ORC_LOADING_TIMEOUT_S) as response:
+            loading = json.load(response)["loading"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return f"GPU-Orc at {_GPU_ORC_URL} gave no usable answer: {error!r}"
+    return f"{', '.join(loading)} is loading" if loading else None
 # Descriptor of the lock file while this process holds the lock. A worker forked inside the lock inherits a copy,
 # and flock holds the lock while any copy is open: the worker closes its copy first (_drop_inherited_placement_lock).
 _held_placement_lock: int | None = None
@@ -817,6 +842,8 @@ def _transcribe_gpu(audio_path: str, language: str, return_segments: bool,
     with _gpu_lock:
         alive = _gpu_process is not None and _gpu_process.is_alive()
         wanted = _model_name(engine, model, quality)
+        if (not alive or (_gpu_engine, _gpu_model_name) != (engine, wanted)) and (refusal := _loading_refusal()):
+            raise GpuUnavailable(refusal)  # decided before a loaded model is let go
         # The worker holds one model; another one means a swap — unless a job is still
         # running on it, then this request is refused like one without room.
         if alive and (_gpu_engine, _gpu_model_name) != (engine, wanted):
@@ -1080,6 +1107,9 @@ def _diarize_worker(req_queue: multiprocessing.Queue, res_queue: multiprocessing
 
 
 def _start_diarize_worker() -> bool:
+    if refusal := _loading_refusal():
+        print(f"[Diarize] Not started: {refusal}", flush=True)
+        return False
     with _placement_lock():
         return _choose_card_and_spawn_diarize_worker()
 
@@ -1642,6 +1672,8 @@ def burn_in_start():
         return _error(409, "burn_in_running", "a burn-in is running, one at a time")
     if _gpu_busy:
         return _error(409, "gpu_busy", "the GPU is transcribing")
+    if refusal := _loading_refusal():
+        return _error(409, "model_loading", refusal)
     _burn_in.update(running=True, engine=engine, model=model, peak_mib=0, error=None)
     threading.Thread(target=_burn_in_job, args=(engine, model), daemon=True, name="burn-in").start()
     return jsonify(_burn_in), 202

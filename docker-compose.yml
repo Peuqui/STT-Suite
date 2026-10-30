@@ -52,6 +52,11 @@ services:
       # Lock file shared with the TTS-Suite: choosing a card and loading the model onto it happens one
       # program at a time, so two services starting together do not pick the same card. Unset = off.
       - STT_GPU_PLACEMENT_LOCK=${STT_GPU_PLACEMENT_LOCK:-}
+      # GPU-Orc of this machine: before a model goes on a card it says whether a big model is loading. From
+      # the container the host is host.docker.internal, and GPU-Orc wants its token there (the token file
+      # inside the directory mounted below). Unset = no GPU-Orc.
+      - STT_GPU_ORC_URL=${STT_GPU_ORC_URL:-}
+      - STT_GPU_ORC_TOKEN_FILE=${STT_GPU_ORC_TOKEN_FILE:-}
       # Free VRAM (MiB) kept on a card beyond what a model takes; also set on the web page.
       - STT_HEADROOM_MIB=${STT_HEADROOM_MIB:-256}
     volumes:
@@ -67,6 +72,10 @@ services:
       - ${HOME}/.cache/huggingface:/hf-host:ro
       # Directory of the shared lock file (create it, and the file, as your user before the first start)
       - ${STT_GPU_PLACEMENT_DIR:-/tmp}:/gpu-placement
+      # Directory of GPU-Orc's token file, read-only (the directory: a missing file would become a directory)
+      - ${STT_GPU_ORC_DIR:-/tmp/stt-suite-no-gpu-orc}:/gpu-orc:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5052/health"]
       interval: 30s
