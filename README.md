@@ -201,6 +201,12 @@ STT_TOKEN_FILE=/stt-token/token
 Only with a token can the service be opened to other machines: `STT_HOST=0.0.0.0` (or one address). Without one it refuses that at
 the start. The connection itself is not encrypted; outside a trusted network put it behind a reverse proxy with HTTPS.
 
+## Outlook: another machine's GPU
+
+Like the TTS-Suite, the STT-Suite is to use another machine's GPU too (Aragon, say, when a large
+model fills the main machine's graphics memory). Plan and requirements, in German:
+[docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md) (not built yet).
+
 ## Star History
 
 ![Star History](https://raw.githubusercontent.com/Peuqui/Traffic/main/data/STT-Suite/star-history.svg)

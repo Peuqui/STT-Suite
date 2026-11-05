@@ -201,6 +201,12 @@ Erst mit Token lässt sich der Dienst für andere Rechner öffnen: `STT_HOST=0.0
 lehnt er das beim Start ab. Die Verbindung selbst ist unverschlüsselt; außerhalb eines vertrauenswürdigen Netzes gehört er hinter
 einen Reverse-Proxy mit HTTPS.
 
+## Ausblick: die GPU eines anderen Rechners
+
+Wie die TTS-Suite soll die STT-Suite auch die GPU eines anderen Rechners nutzen können (etwa Aragon,
+wenn auf dem Mini ein großes Modell den Grafikspeicher belegt). Plan und Voraussetzungen:
+[docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md) (noch nicht gebaut).
+
 ## Star History
 
 ![Star History](https://raw.githubusercontent.com/Peuqui/Traffic/main/data/STT-Suite/star-history.svg)
