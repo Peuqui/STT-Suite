@@ -1,4 +1,4 @@
-import { ApiError } from './api.js'
+import { ApiError, token } from './api.js'
 import { catalogView } from './catalog.js'
 import { configView } from './config.js'
 import { h } from './dom.js'
@@ -19,7 +19,8 @@ function say(text, kind) {
 }
 message.addEventListener('click', () => { message.hidden = true })
 const show = (text) => say(text, 'ok')
-const fail = (error) => say(error instanceof ApiError || error instanceof Error ? error.message : String(error), 'error')
+const fail = (error) => say(error instanceof ApiError && error.status === 401 ? `${t('needsToken')} (${error.message})`
+  : error instanceof Error ? error.message : String(error), 'error')
 
 const views = {
   catalog: catalogView({ show, fail }),
@@ -58,6 +59,7 @@ function applyTheme() {
 function translateStatic() {
   document.documentElement.lang = currentLanguage()
   document.getElementById('language').textContent = t('language')
+  document.getElementById('token-label').textContent = t('token')
   applyTheme()
   drawTabs()
   views[current].render()
@@ -68,6 +70,14 @@ document.getElementById('theme').addEventListener('click', () => {
   const now = localStorage.getItem('stt-suite-theme') ?? 'auto'
   localStorage.setItem('stt-suite-theme', THEMES[(THEMES.indexOf(now) + 1) % THEMES.length])
   applyTheme()
+})
+// The token form is never sent: the field only keeps the token (below).
+document.getElementById('token-form').addEventListener('submit', (event) => event.preventDefault())
+const tokenField = document.getElementById('token')
+tokenField.value = token.get()
+tokenField.addEventListener('change', () => {
+  token.set(tokenField.value.trim())
+  show(t(token.get() ? 'tokenKept' : 'tokenCleared'))
 })
 onLanguageChange(translateStatic)
 translateStatic()

@@ -12,6 +12,14 @@
     <h1>STT-Suite</h1>
     <nav id="tabs" role="tablist"></nav>
     <div class="tools">
+      <!-- A form of its own: the password manager of the browser then takes only this field for a login and
+           does not offer itself on the other fields of the page. -->
+      <form id="token-form" autocomplete="off">
+        <label class="token">
+          <span id="token-label"></span>
+          <input id="token" type="password" autocomplete="off" spellcheck="false" />
+        </label>
+      </form>
       <button id="language" type="button" class="small"></button>
       <button id="theme" type="button" class="small"></button>
     </div>

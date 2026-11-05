@@ -11,7 +11,10 @@ import server
 
 @pytest.fixture
 def client():
-    return server.app.test_client()
+    """A client on this machine with the token: a burn-in and a config change need it."""
+    test_client = server.app.test_client()
+    test_client.environ_base["HTTP_X_STT_SUITE_TOKEN"] = server._access.token
+    return test_client
 
 
 @pytest.fixture(autouse=True)

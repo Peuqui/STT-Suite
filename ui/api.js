@@ -1,4 +1,21 @@
-// The calls to the service. It has no login (see the README), so there is no token.
+// The calls to the service. The token is kept in this browser (localStorage, so that closing the tab does not lose it) and sent with
+// every call; the service asks for it only where something is changed (or everywhere on a network), like the TTS-Suite.
+const TOKEN_KEY = 'stt-suite-token'
+// Not `Authorization`: behind a reverse proxy with its own login that header belongs to the proxy.
+const TOKEN_HEADER = 'X-STT-Suite-Token'
+
+export const token = {
+  get: () => localStorage.getItem(TOKEN_KEY) ?? '',
+  set: (value) => (value ? localStorage.setItem(TOKEN_KEY, value) : localStorage.removeItem(TOKEN_KEY)),
+}
+
+function headers(sendsJson) {
+  const result = {}
+  if (sendsJson) result['Content-Type'] = 'application/json'
+  if (token.get()) result[TOKEN_HEADER] = token.get()
+  return result
+}
+
 export class ApiError extends Error {
   constructor(status, detail, busy) {
     super(detail)
@@ -11,7 +28,7 @@ export class ApiError extends Error {
 export async function json(path, { method = 'GET', body } = {}) {
   const response = await fetch(path, {
     method,
-    headers: body === undefined || body instanceof FormData ? {} : { 'Content-Type': 'application/json' },
+    headers: headers(!(body === undefined || body instanceof FormData)),
     body: body === undefined || body instanceof FormData ? body : JSON.stringify(body),
   })
   const data = await response.json().catch(() => ({}))
