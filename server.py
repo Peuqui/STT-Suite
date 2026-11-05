@@ -17,6 +17,8 @@ Endpoints:
     POST /unload    — Unload model(s) to free memory
     GET  /config    — Get current configuration
     POST /config    — Update configuration (JSON body)
+
+Access: see auth.py (loopback without a token except for the commands that change something).
 """
 
 from __future__ import annotations
@@ -35,6 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
+
+from auth import TOKEN_HEADER, access_for, read_token
 
 app = Flask(__name__)
 
@@ -405,7 +409,7 @@ _gpu_lock = threading.Lock()
 # card at the same moment. Unset = no other program to coordinate with.
 _PLACEMENT_LOCK_FILE = os.environ.get("STT_GPU_PLACEMENT_LOCK", "")
 
-# The GPU-Orc of this machine (from the container: http://host.docker.internal:5070 with its token). Before
+# The GPU-Orc of this machine (the container shares the host's network: http://127.0.0.1:5070). Before
 # a model goes on a card it says whether a big model is loading: the cards then look emptier than they are
 # about to be, and a worker placed there would take the model's room. The free VRAM still comes from
 # nvidia-smi alone. Empty = no GPU-Orc on this machine.
@@ -1343,6 +1347,33 @@ UI_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Cache-Control": "no-cache",
 }
+
+
+# ── Access (the rules are in auth.py) ────────────────────────
+
+# Where gunicorn listens (gunicorn.conf.py reads the same variables): beyond loopback only with the token.
+LISTEN_HOST = os.environ["STT_HOST"]
+_TOKEN_FILE = os.environ.get("STT_TOKEN_FILE", "")
+_access = access_for(LISTEN_HOST, read_token(Path(_TOKEN_FILE)) if _TOKEN_FILE else None)
+# The commands that change something: they need the token also on this machine.
+_CHANGING = {("POST", "/config"), ("POST", "/burn-in")}
+
+
+def _open_to_all(path: str) -> bool:
+    """The page itself (it sends the token entered on it) and the health check, as at the TTS-Suite."""
+    return path in ("/", "/health") or path.startswith(f"{UI_PREFIX}/")
+
+
+@app.before_request
+def _check_access():
+    if _open_to_all(request.path):
+        return None
+    changes_something = (request.method, request.path) in _CHANGING
+    refusal = _access.refusal(request.headers.get(TOKEN_HEADER, ""), changes_something, request.remote_addr)
+    if refusal is None:
+        return None
+    _log_client("refused", path=request.path)
+    return _error(401, "unauthorized", refusal)
 
 
 @app.route("/", methods=["GET"])

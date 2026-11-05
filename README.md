@@ -64,8 +64,9 @@ Without an NVIDIA GPU, or without its driver in Docker, the base file stops with
 driver "nvidia"”: add the CPU file, `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build`
 (it takes the GPU reservation away).
 
-The service listens on port **5080**. Models are cached in the Docker volume `stt_suite_models`
-and survive rebuilds. The container restarts with Docker (`restart: unless-stopped`).
+The service listens on port **5080**, by default on `127.0.0.1` only (for other machines see [Security](#security)). The
+container shares the machine's network (`network_mode: host`), so that the service sees the address a request comes from.
+Models are cached in the Docker volume `stt_suite_models` and survive rebuilds. The container restarts with Docker (`restart: unless-stopped`).
 
 ## API
 
@@ -99,12 +100,19 @@ The answer is JSON with `text`, the time taken, the device and the engine used a
 Whisper, `quality` for Parakeet); after a fallback also `fallback`, the list of what could not take the
 request, each with `tried` and `reason`. Errors: `400` for a missing file or an invalid value, `503` when
 the GPU has no room for the model (or is busy with another one), `500` otherwise. A refusal is JSON `{"error": <code>, "detail": <text>}`,
-like the TTS-Suite's; the codes are `bad_request`, `gpu_unavailable`, `gpu_busy`, `model_loading`, `burn_in_running`, `decode_failed` and
-`transcription_failed`.
+like the TTS-Suite's; the codes are `bad_request`, `unauthorized` (`401`, see [Security](#security)), `gpu_unavailable`, `gpu_busy`,
+`model_loading`, `burn_in_running`, `decode_failed` and `transcription_failed`.
 
 ```
 curl -F file=@speech.webm -F device=cuda http://localhost:5080/transcribe
 ```
+
+## Updating from before 5 November 2026
+
+The container runs in the machine's network instead of behind a published port, and `host.docker.internal` no longer exists
+in it: set `STT_GPU_ORC_URL=http://127.0.0.1:5070` in your `.env`. A call that changes something (`POST /config`,
+`POST /burn-in`) now needs the token, also from the same machine; without a token file the service refuses it (see
+[Security](#security)). Then `docker compose up -d --build`.
 
 ## Updating from before 12 October 2026
 
@@ -131,7 +139,10 @@ Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt 
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper size on the GPU |
 | `STT_GPU_TTL_MINUTES` | `30` | Idle minutes until the GPU worker is stopped and its VRAM freed; `0` keeps it |
 | `STT_GPU_PLACEMENT_LOCK` | unset | Lock file (inside the container, e.g. `/gpu-placement/placement.lock`, in the directory `STT_GPU_PLACEMENT_DIR` of the host mounted there) that this service and the TTS-Suite lock with `flock` while they choose a card and load onto it. Two services starting together then do not pick the same card. Unset = off; the file must exist and be writable |
-| `STT_GPU_ORC_URL` | unset | The GPU-Orc of this machine (from the container `http://host.docker.internal:5070`, with `STT_GPU_ORC_DIR` and `STT_GPU_ORC_TOKEN_FILE`): before a model goes on a card the suite asks `GET /loading`. While a big model loads or without a usable answer the GPU counts as unavailable: `device=auto` goes on down to the CPU, `device=cuda` answers `503` |
+| `STT_HOST` | `127.0.0.1` | Where the service listens. Another address (`0.0.0.0` for all) lets other machines in and requires the token; without a token file the service then does not start |
+| `STT_PORT` | `5080` | The service's port (not 5052: the container shares the machine's network) |
+| `STT_TOKEN_DIR` / `STT_TOKEN_FILE` | unset | Directory of the token file on the machine (mounted read-only at `/stt-token`) and the file inside the container, e.g. `~/.config/stt-suite` and `/stt-token/token`. See [Security](#security) |
+| `STT_GPU_ORC_URL` | unset | The GPU-Orc of this machine (`http://127.0.0.1:5070`; one on another address also needs `STT_GPU_ORC_DIR` and `STT_GPU_ORC_TOKEN_FILE`): before a model goes on a card the suite asks `GET /loading`. While a big model loads or without a usable answer the GPU counts as unavailable: `device=auto` goes on down to the CPU, `device=cuda` answers `503` |
 | `STT_LANGUAGE` | `de` | Default language (`auto` detects it) |
 | `STT_EAGER_LOAD` | `1` | Load the CPU model at start |
 | `STT_CONFIG_FILE` | `/state/config.json` | Where settings changed via `/config` are kept (volume `stt_suite_state`). The environment only gives the first defaults; once this file exists it wins. Delete it to return to the environment |
@@ -170,9 +181,25 @@ the model volume on first use.
 
 ## Security
 
-The service has no login, and `docker-compose.yml` publishes port 5080 on every address of the
-machine. Keep it behind a firewall, or publish it on the loopback address only
-(`"127.0.0.1:5080:5052"`) when only programs on the same machine use it.
+As at the TTS-Suite: a caller on this machine (loopback) transcribes and asks (every `GET`, and `/unload` and `/gpu/release`)
+without a token. A command that changes something (`POST /config`, `POST /burn-in`) always needs the token, also on this machine,
+since every program there reaches localhost. A caller on another machine needs it for everything except the web page and
+`/health`. The token goes in the header `X-STT-Suite-Token` (not `Authorization`: behind a reverse proxy with its own login that
+header belongs to the proxy); on the web page it is entered once at the top and kept in that browser.
+
+Make the token (Python only, nothing to install) and put it into the `.env`:
+
+```
+python3 auth.py token ~/.config/stt-suite/token
+```
+
+```
+STT_TOKEN_DIR=/home/<you>/.config/stt-suite
+STT_TOKEN_FILE=/stt-token/token
+```
+
+Only with a token can the service be opened to other machines: `STT_HOST=0.0.0.0` (or one address). Without one it refuses that at
+the start. The connection itself is not encrypted; outside a trusted network put it behind a reverse proxy with HTTPS.
 
 ## Star History
 

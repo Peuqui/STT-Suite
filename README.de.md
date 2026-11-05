@@ -64,8 +64,9 @@ Ohne NVIDIA-Grafikkarte, oder ohne deren Treiber in Docker, bricht die Basisdate
 driver "nvidia"“ ab: Die CPU-Datei dazunehmen, `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build`
 (sie nimmt die GPU-Reservierung weg).
 
-Der Dienst hört auf Port **5080**. Die Modelle liegen im Docker-Volume `stt_suite_models` und
-überstehen einen Neubau. Der Container startet mit Docker neu (`restart: unless-stopped`).
+Der Dienst hört auf Port **5080**, standardmäßig nur auf `127.0.0.1` (für andere Rechner siehe [Sicherheit](#sicherheit)).
+Der Container teilt sich das Netz mit dem Rechner (`network_mode: host`), damit der Dienst sieht, von welcher Adresse eine
+Anfrage kommt. Die Modelle liegen im Docker-Volume `stt_suite_models` und überstehen einen Neubau. Der Container startet mit Docker neu (`restart: unless-stopped`).
 
 ## API
 
@@ -99,12 +100,19 @@ Die Antwort ist JSON mit `text`, der benötigten Zeit, dem verwendeten Gerät un
 Whisper, `quality` bei Parakeet); nach einem Rückfall auch `fallback`, die Liste dessen, was die Anfrage nicht übernehmen
 konnte, je mit `tried` und `reason`. Fehler: `400` bei fehlender Datei oder ungültigem Wert, `503`, wenn die GPU für das Modell
 keinen Platz hat (oder mit einem anderen beschäftigt ist), sonst `500`. Eine Ablehnung ist JSON `{"error": <Code>, "detail": <Text>}`,
-wie bei der TTS-Suite; die Codes sind `bad_request`, `gpu_unavailable`, `gpu_busy`, `model_loading`, `burn_in_running`, `decode_failed` und
-`transcription_failed`.
+wie bei der TTS-Suite; die Codes sind `bad_request`, `unauthorized` (`401`, siehe [Sicherheit](#sicherheit)), `gpu_unavailable`, `gpu_busy`,
+`model_loading`, `burn_in_running`, `decode_failed` und `transcription_failed`.
 
 ```
 curl -F file=@sprache.webm -F device=cuda http://localhost:5080/transcribe
 ```
+
+## Aktualisieren von vor dem 5. November 2026
+
+Der Container läuft im Netz des Rechners statt hinter einem veröffentlichten Port, und `host.docker.internal` gibt es darin
+nicht mehr: Setze in der `.env` `STT_GPU_ORC_URL=http://127.0.0.1:5070`. Ein Aufruf, der etwas ändert (`POST /config`,
+`POST /burn-in`), braucht jetzt das Token, auch vom selben Rechner; ohne Token-Datei lehnt der Dienst ihn ab (siehe
+[Sicherheit](#sicherheit)). Danach `docker compose up -d --build`.
 
 ## Aktualisieren von vor dem 12. Oktober 2026
 
@@ -129,7 +137,10 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `WHISPER_GPU_MODEL` | `large-v3` | Whisper-Größe auf der GPU |
 | `STT_GPU_TTL_MINUTES` | `30` | Leerlauf-Minuten, bis der GPU-Worker endet und sein VRAM frei wird; `0` behält ihn |
 | `STT_GPU_PLACEMENT_LOCK` | nicht gesetzt | Sperrdatei (im Container, z. B. `/gpu-placement/placement.lock`, im Verzeichnis `STT_GPU_PLACEMENT_DIR` des Hosts, das dort eingehängt ist), die dieser Dienst und die TTS-Suite mit `flock` sperren, solange sie eine Karte wählen und darauf laden. Zwei gleichzeitig startende Dienste wählen dann nicht dieselbe Karte. Nicht gesetzt = aus; die Datei muss existieren und schreibbar sein |
-| `STT_GPU_ORC_URL` | nicht gesetzt | Der GPU-Orc dieses Rechners (aus dem Container `http://host.docker.internal:5070`, dazu `STT_GPU_ORC_DIR` und `STT_GPU_ORC_TOKEN_FILE`): Bevor ein Modell auf eine Karte geht, fragt die Suite `GET /loading`. Lädt ein großes Modell oder kommt keine brauchbare Antwort, gilt die GPU als nicht verfügbar: `device=auto` geht weiter bis zur CPU, `device=cuda` antwortet `503` |
+| `STT_HOST` | `127.0.0.1` | Wo der Dienst lauscht. Eine andere Adresse (`0.0.0.0` für alle) lässt andere Rechner zu und verlangt das Token; ohne Token-Datei startet der Dienst dann nicht |
+| `STT_PORT` | `5080` | Port des Dienstes (nicht 5052: Der Container teilt sich das Netz mit dem Rechner) |
+| `STT_TOKEN_DIR` / `STT_TOKEN_FILE` | nicht gesetzt | Verzeichnis der Token-Datei auf dem Rechner (schreibgeschützt eingehängt unter `/stt-token`) und die Datei im Container, z. B. `~/.config/stt-suite` und `/stt-token/token`. Siehe [Sicherheit](#sicherheit) |
+| `STT_GPU_ORC_URL` | nicht gesetzt | Der GPU-Orc dieses Rechners (`http://127.0.0.1:5070`; einer auf einer anderen Adresse braucht dazu `STT_GPU_ORC_DIR` und `STT_GPU_ORC_TOKEN_FILE`): Bevor ein Modell auf eine Karte geht, fragt die Suite `GET /loading`. Lädt ein großes Modell oder kommt keine brauchbare Antwort, gilt die GPU als nicht verfügbar: `device=auto` geht weiter bis zur CPU, `device=cuda` antwortet `503` |
 | `STT_LANGUAGE` | `de` | Standardsprache (`auto` erkennt sie) |
 | `STT_EAGER_LOAD` | `1` | CPU-Modell beim Start laden |
 | `STT_CONFIG_FILE` | `/state/config.json` | Ablage der über `/config` geänderten Einstellungen (Volume `stt_suite_state`). Die Umgebung liefert nur die ersten Standardwerte; sobald die Datei existiert, gilt sie. Zum Zurücksetzen löschen |
@@ -169,9 +180,26 @@ ersten Gebrauch ins Modell-Volume geladen.
 
 ## Sicherheit
 
-Der Dienst hat keine Anmeldung, und `docker-compose.yml` veröffentlicht Port 5080 auf allen Adressen
-des Rechners. Halte ihn hinter einer Firewall oder veröffentliche ihn nur auf der Loopback-Adresse
-(`"127.0.0.1:5080:5052"`), wenn nur Programme auf demselben Rechner ihn nutzen.
+Wie bei der TTS-Suite: Ein Aufrufer auf diesem Rechner (Loopback) transkribiert und fragt (jedes `GET`, dazu `/unload` und
+`/gpu/release`) ohne Token. Ein Befehl, der etwas ändert (`POST /config`, `POST /burn-in`), braucht immer das Token, auch auf
+diesem Rechner, denn jedes Programm dort erreicht localhost. Ein Aufrufer auf einem anderen Rechner braucht es für alles außer
+der Webseite und `/health`. Das Token geht im Kopf `X-STT-Suite-Token` mit (nicht `Authorization`: Hinter einem Reverse-Proxy
+mit eigener Anmeldung gehört der dem Proxy); auf der Webseite wird es einmal oben eingetragen und bleibt in diesem Browser.
+
+Das Token anlegen (nur Python, nichts zu installieren) und in der `.env` eintragen:
+
+```
+python3 auth.py token ~/.config/stt-suite/token
+```
+
+```
+STT_TOKEN_DIR=/home/<du>/.config/stt-suite
+STT_TOKEN_FILE=/stt-token/token
+```
+
+Erst mit Token lässt sich der Dienst für andere Rechner öffnen: `STT_HOST=0.0.0.0` (oder eine bestimmte Adresse). Ohne Token
+lehnt er das beim Start ab. Die Verbindung selbst ist unverschlüsselt; außerhalb eines vertrauenswürdigen Netzes gehört er hinter
+einen Reverse-Proxy mit HTTPS.
 
 ## Star History
 

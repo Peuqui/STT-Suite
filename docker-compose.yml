@@ -6,8 +6,9 @@ services:
     build: .
     container_name: stt-suite
     restart: unless-stopped  # Always running (CPU mode has no VRAM cost)
-    ports:
-      - "127.0.0.1:5080:5052"
+    # The host's network: the service sees the real address of each caller, which its access rules need (a
+    # published port shows every caller as the Docker gateway). Where it listens: STT_HOST and STT_PORT below.
+    network_mode: host
     deploy:
       resources:
         reservations:
@@ -17,6 +18,13 @@ services:
               capabilities: [gpu]
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      # Where the service listens. 127.0.0.1 = this machine only; 0.0.0.0 (or one address) lets other
+      # machines in and needs the token (STT_TOKEN_DIR below). Not 5052: Qwen3-TTS listens there on the host.
+      - STT_HOST=${STT_HOST:-127.0.0.1}
+      - STT_PORT=${STT_PORT:-5080}
+      # The token file inside the directory mounted below (made with `python3 auth.py token <file>`). Unset =
+      # no token: then only loopback, and the commands that change something are refused.
+      - STT_TOKEN_FILE=${STT_TOKEN_FILE:-}
       # Whisper model size (tiny, base, small, medium, large-v3)
       - WHISPER_MODEL=${WHISPER_MODEL:-medium}
       # The GPU gets the big model; CPU keeps the WHISPER_MODEL default — large on CPU would be
@@ -52,9 +60,9 @@ services:
       # Lock file shared with the TTS-Suite: choosing a card and loading the model onto it happens one
       # program at a time, so two services starting together do not pick the same card. Unset = off.
       - STT_GPU_PLACEMENT_LOCK=${STT_GPU_PLACEMENT_LOCK:-}
-      # GPU-Orc of this machine: before a model goes on a card it says whether a big model is loading. From
-      # the container the host is host.docker.internal, and GPU-Orc wants its token there (the token file
-      # inside the directory mounted below). Unset = no GPU-Orc.
+      # GPU-Orc of this machine: before a model goes on a card it says whether a big model is loading. The
+      # container shares the host's network, so http://127.0.0.1:5070 (loopback: GPU-Orc wants no token there;
+      # for one on another address, the token file inside the directory mounted below). Unset = no GPU-Orc.
       - STT_GPU_ORC_URL=${STT_GPU_ORC_URL:-}
       - STT_GPU_ORC_TOKEN_FILE=${STT_GPU_ORC_TOKEN_FILE:-}
       # Free VRAM (MiB) kept on a card beyond what a model takes; also set on the web page.
@@ -74,10 +82,10 @@ services:
       - ${STT_GPU_PLACEMENT_DIR:-/tmp}:/gpu-placement
       # Directory of GPU-Orc's token file, read-only (the directory: a missing file would become a directory)
       - ${STT_GPU_ORC_DIR:-/tmp/stt-suite-no-gpu-orc}:/gpu-orc:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # Directory of this service's token file, read-only (the directory, for the same reason)
+      - ${STT_TOKEN_DIR:-/tmp/stt-suite-no-token}:/stt-token:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5052/health"]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:$${STT_PORT}/health"]
       interval: 30s
       timeout: 10s
       retries: 3

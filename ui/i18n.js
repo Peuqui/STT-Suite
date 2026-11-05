@@ -2,6 +2,8 @@
 const TEXTS = {
   de: {
     language: 'English', themeLight: 'Hell', themeDark: 'Dunkel', themeAuto: 'Automatisch',
+    token: 'Token', needsToken: 'Dafür ist das Token nötig (oben eintragen).',
+    tokenKept: 'Token gespeichert (in diesem Browser).', tokenCleared: 'Token entfernt.',
     tabCatalog: 'Engines', tabConfig: 'Konfiguration', tabTest: 'Probe',
     up: 'Nach oben', down: 'Nach unten', add: 'Hinzufügen', remove: 'Entfernen',
     reload: 'Neu laden', save: 'Speichern', saved: 'Gespeichert: {changed}.', nothingChanged: 'Nichts geändert.',
@@ -33,6 +35,8 @@ const TEXTS = {
   },
   en: {
     language: 'Deutsch', themeLight: 'Light', themeDark: 'Dark', themeAuto: 'Automatic',
+    token: 'Token', needsToken: 'This needs the token (enter it above).',
+    tokenKept: 'Token saved (in this browser).', tokenCleared: 'Token removed.',
     tabCatalog: 'Engines', tabConfig: 'Configuration', tabTest: 'Test',
     up: 'Move up', down: 'Move down', add: 'Add', remove: 'Remove',
     reload: 'Reload', save: 'Save', saved: 'Saved: {changed}.', nothingChanged: 'Nothing changed.',
