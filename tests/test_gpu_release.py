@@ -38,12 +38,16 @@ class FakeQueue:
         self.items.append(item)
 
 
+# nvidia-smi's processes per card (host PIDs): the GPU worker, another program, the diarization worker.
+CARD_PROCESSES = {"GPU-bbbb": {9001: 3720, 555: 20000}, "GPU-cccc": {9002: 1800}}
+
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
     for name, value in {
-        "_gpu_process": None, "_gpu_busy": False, "_gpu_uuid": "", "_gpu_footprint_mib": 0,
+        "_gpu_process": None, "_gpu_busy": False, "_gpu_uuid": "", "_gpu_host_pid": None,
         "_gpu_request_queue": None, "_gpu_result_queue": None,
-        "_diarize_process": None, "_diarize_busy": False, "_diarize_uuid": "",
+        "_diarize_process": None, "_diarize_busy": False, "_diarize_uuid": "", "_diarize_host_pid": None,
         "_diarize_request_queue": None, "_diarize_result_queue": None,
     }.items():
         monkeypatch.setattr(server, name, value)
@@ -57,7 +61,8 @@ def gpu_worker(monkeypatch: pytest.MonkeyPatch, busy: bool = False, stubborn: bo
     monkeypatch.setattr(server, "_gpu_process", FakeProcess(4711, stubborn))
     monkeypatch.setattr(server, "_gpu_busy", busy)
     monkeypatch.setattr(server, "_gpu_uuid", "GPU-bbbb")
-    monkeypatch.setattr(server, "_gpu_footprint_mib", 3100)
+    monkeypatch.setattr(server, "_gpu_host_pid", 9001)
+    monkeypatch.setattr(server, "_card_processes", lambda uuid: CARD_PROCESSES.get(uuid, {}))
     monkeypatch.setattr(server, "_gpu_request_queue", FakeQueue())
     monkeypatch.setattr(server, "_gpu_result_queue", results)
     return results
@@ -73,10 +78,19 @@ def test_holders_name_the_card_the_memory_and_whether_it_works(client: Any, monk
     gpu_worker(monkeypatch, busy=True)
     monkeypatch.setattr(server, "_diarize_process", FakeProcess(4712))
     monkeypatch.setattr(server, "_diarize_uuid", "GPU-cccc")
+    monkeypatch.setattr(server, "_diarize_host_pid", 9002)
     assert client.get("/gpu/holders").get_json() == {"holders": [
-        {"item": "gpu-worker", "gpu_uuids": ["GPU-bbbb"], "memory_mib": {"GPU-bbbb": 3100}, "busy": True},
-        {"item": "diarize-worker", "gpu_uuids": ["GPU-cccc"], "memory_mib": None, "busy": False},
+        {"item": "gpu-worker", "gpu_uuids": ["GPU-bbbb"], "memory_mib": {"GPU-bbbb": 3720}, "busy": True},
+        {"item": "diarize-worker", "gpu_uuids": ["GPU-cccc"], "memory_mib": {"GPU-cccc": 1800}, "busy": False},
     ]}
+
+
+def test_holders_leave_out_the_memory_of_a_worker_whose_process_is_not_known(
+    client: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gpu_worker(monkeypatch)
+    monkeypatch.setattr(server, "_gpu_host_pid", None)
+    assert client.get("/gpu/holders").get_json()["holders"][0]["memory_mib"] is None
 
 
 def test_nothing_running(client: Any) -> None:

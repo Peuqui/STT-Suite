@@ -56,9 +56,40 @@ def test_a_model_is_not_started_when_no_card_has_room_even_after_the_loaded_one_
 ) -> None:
     monkeypatch.setattr(server, "_free_per_card_mib", lambda: {0: 1000, 1: 2000})
     monkeypatch.setattr(server, "_gpu_device_index", 1)
-    monkeypatch.setattr(server, "_gpu_footprint_mib", 3000)
+    monkeypatch.setattr(server, "_gpu_uuid", "GPU-1")
+    monkeypatch.setattr(server, "_gpu_host_pid", 4711)
+    monkeypatch.setattr(server, "_card_processes", lambda uuid: {4711: 3000} if uuid == "GPU-1" else {})
     assert server._room_after_release(need=4500) is None  # card 1 has 5000 once the worker lets go
     assert server._room_after_release(need=6000) is not None
+
+
+def test_a_worker_whose_process_is_not_known_frees_nothing_in_the_reckoning(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "_free_per_card_mib", lambda: {0: 1000, 1: 2000})
+    monkeypatch.setattr(server, "_gpu_device_index", 1)
+    monkeypatch.setattr(server, "_gpu_uuid", "GPU-1")
+    monkeypatch.setattr(server, "_gpu_host_pid", None)
+    monkeypatch.setattr(server, "_card_processes", lambda uuid: {4711: 3000})
+    assert server._room_after_release(need=2000) is None
+    assert server._room_after_release(need=2500) is not None
+
+
+def test_the_worker_is_the_one_process_new_on_its_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "_card_processes", lambda uuid: {100: 500, 4711: 3600})
+    assert server._new_process("GPU-1", {100}, "test") == 4711
+
+
+def test_two_new_processes_cannot_be_told_apart(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "_card_processes", lambda uuid: {100: 500, 4711: 3600, 4800: 9000})
+    assert server._new_process("GPU-1", {100}, "test") is None
+    assert server._new_process("GPU-1", {100, 4711, 4800}, "test") is None
+
+
+def test_the_card_table_is_read_per_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = "GPU-0, 100, 500\nGPU-1, 4711, 3720\n"
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: type("Result", (), {"stdout": table})())
+    assert server._card_processes("GPU-1") == {4711: 3720}
+    assert server._process_vram_mib("GPU-1", 4711) == 3720
+    assert server._process_vram_mib("GPU-1", None) is None
 
 
 def test_without_a_lock_file_choosing_does_not_wait(monkeypatch: pytest.MonkeyPatch) -> None:

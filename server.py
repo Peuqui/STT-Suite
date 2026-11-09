@@ -467,7 +467,7 @@ _gpu_uuid: str = ""  # UUID of the card Whisper sits on (diarization avoids it)
 _gpu_model_name: str = ""  # Track which model is loaded on GPU
 _gpu_engine: str = ""  # whisper | parakeet — the worker holds one engine
 _gpu_quality: str = ""  # Parakeet quality of the loaded worker
-_gpu_footprint_mib: int = 0  # What the loaded worker took on its card right after loading
+_gpu_host_pid: int | None = None  # The worker as nvidia-smi names it (host PID): its memory is read there
 
 
 def _find_best_gpu(min_vram_mib: int,
@@ -684,7 +684,8 @@ def _room_after_release(need: int) -> str | None:
     cannot be loaded never costs the one that is."""
     free = _free_per_card_mib()
     if _gpu_device_index in free:
-        free[_gpu_device_index] += _gpu_footprint_mib  # what it took when loaded: no more than it holds now
+        # What the worker holds now comes free; unknown, nothing is counted (a load may be refused, never overbooked).
+        free[_gpu_device_index] += _process_vram_mib(_gpu_uuid, _gpu_host_pid) or 0
     best = max(free.values(), default=0)
     return None if best >= need else _refusal(need, best)
 
@@ -693,9 +694,9 @@ def _spawn_gpu_worker(selected: tuple[int, str], model_name: str, compute: str,
                       engine: str, quality: str) -> bool:
     """Start the worker process on the chosen card and wait until it is ready."""
     global _gpu_process, _gpu_request_queue, _gpu_result_queue, _gpu_device_index, _gpu_model_name, _gpu_uuid
-    global _gpu_engine, _gpu_quality, _gpu_footprint_mib
+    global _gpu_engine, _gpu_quality, _gpu_host_pid
     gpu_idx, gpu_uuid = selected
-    used_before = _used_per_card_mib().get(gpu_idx, 0)
+    pids_before = set(_card_processes(gpu_uuid))
     _gpu_device_index = gpu_idx
     _gpu_uuid = gpu_uuid
     _gpu_model_name = model_name
@@ -718,8 +719,9 @@ def _spawn_gpu_worker(selected: tuple[int, str], model_name: str, compute: str,
     try:
         msg = _gpu_result_queue.get(timeout=600 if engine == "parakeet" else 120)
         if msg.get("status") == "ready":
-            _gpu_footprint_mib = max(0, _used_per_card_mib().get(gpu_idx, 0) - used_before)
-            print(f"[STT] GPU worker ({engine}) ready on GPU {gpu_idx}, {_gpu_footprint_mib} MiB", flush=True)
+            _gpu_host_pid = _new_process(gpu_uuid, pids_before, "GPU worker")
+            memory = _process_vram_mib(gpu_uuid, _gpu_host_pid)
+            print(f"[STT] GPU worker ({engine}) ready on GPU {gpu_idx}, {memory} MiB", flush=True)
             return True
     except queue.Empty:
         print(f"[STT] GPU worker ({engine}) did not report ready in time", flush=True)
@@ -753,7 +755,7 @@ def _kill_gpu_worker(withdrawn: str = "") -> str:
     "GPU unavailable", so a request with ``device=auto`` goes on on the CPU.
     """
     global _gpu_process, _gpu_request_queue, _gpu_result_queue, _gpu_device_index, _gpu_model_name, _gpu_uuid
-    global _gpu_engine, _gpu_quality, _gpu_footprint_mib
+    global _gpu_engine, _gpu_quality, _gpu_host_pid
 
     if _gpu_process is not None:
         print(f"[STT] Ending GPU worker (PID {_gpu_process.pid}, GPU {_gpu_device_index})", flush=True)
@@ -779,7 +781,7 @@ def _kill_gpu_worker(withdrawn: str = "") -> str:
     _gpu_model_name = ""
     _gpu_engine = ""
     _gpu_quality = ""
-    _gpu_footprint_mib = 0
+    _gpu_host_pid = None
     return ""
 
 
@@ -948,6 +950,34 @@ def _used_per_card_mib() -> dict[int, int]:
     return {int(index): int(used) for index, used in (line.split(",") for line in output.strip().splitlines())}
 
 
+def _card_processes(gpu_uuid: str) -> dict[int, int]:
+    """The processes on one card: PID → used VRAM (MiB). nvidia-smi names host PIDs, also inside the container,
+    so a worker is recognised by appearing there when it starts, not by its own PID."""
+    import subprocess
+    output = subprocess.run(["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,used_memory", "--format=csv,noheader,nounits"],
+                            capture_output=True, text=True, timeout=5, check=True).stdout
+    rows = ([field.strip() for field in line.split(",")] for line in output.strip().splitlines())
+    return {int(pid): int(used) for uuid, pid, used in rows if uuid == gpu_uuid}
+
+
+def _new_process(gpu_uuid: str, pids_before: set[int], label: str) -> int | None:
+    """The one process that came onto the card since `pids_before`: the worker just started. Two new ones (another
+    program loaded at the same moment) cannot be told apart: said in the log, and its memory stays unreported."""
+    new = set(_card_processes(gpu_uuid)) - pids_before
+    if len(new) == 1:
+        return new.pop()
+    print(f"[STT] {label}: its process on the card is not clear (new there: {sorted(new) or 'none'}); "
+          "its memory is not reported", flush=True)
+    return None
+
+
+def _process_vram_mib(gpu_uuid: str, host_pid: int | None) -> int | None:
+    """What the process holds on the card now (CUDA context included); None when it is not known."""
+    if host_pid is None:
+        return None
+    return _card_processes(gpu_uuid).get(host_pid)
+
+
 def _measure(engine: str, model: str) -> int:
     """Load this model on a GPU, transcribe the recording, and take the highest rise of the used memory
     on the card it sits on (sampled every 0.1 s). Another program growing on that card meanwhile counts too."""
@@ -1025,6 +1055,7 @@ _diarize_lock = threading.Lock()
 _diarize_ttl_timer: threading.Timer | None = None
 _diarize_device_index: int | None = None
 _diarize_uuid: str = ""  # UUID of the card the diarization worker sits on
+_diarize_host_pid: int | None = None  # The worker as nvidia-smi names it (host PID): its memory is read there
 _diarize_busy = False  # True between a submitted job and its collected result
 
 
@@ -1121,6 +1152,7 @@ def _start_diarize_worker() -> bool:
 def _choose_card_and_spawn_diarize_worker() -> bool:
     """Start the diarization child process, avoiding Whisper's GPU."""
     global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index, _diarize_uuid
+    global _diarize_host_pid
 
     selected = _find_best_gpu(min_vram_mib=_DIARIZE_MIN_VRAM_MIB,
                               exclude_uuid=_gpu_uuid or None,
@@ -1134,6 +1166,7 @@ def _choose_card_and_spawn_diarize_worker() -> bool:
     if selected is None:
         return False
     gpu_idx, gpu_uuid = selected
+    pids_before = set(_card_processes(gpu_uuid))
 
     _diarize_device_index = gpu_idx
     _diarize_uuid = gpu_uuid
@@ -1152,7 +1185,9 @@ def _choose_card_and_spawn_diarize_worker() -> bool:
     try:
         msg = _diarize_result_queue.get(timeout=300)  # first run downloads models
         if msg.get("status") == "ready":
-            print(f"[Diarize] Worker ready on GPU {gpu_idx}", flush=True)
+            _diarize_host_pid = _new_process(gpu_uuid, pids_before, "diarization worker")
+            memory = _process_vram_mib(gpu_uuid, _diarize_host_pid)
+            print(f"[Diarize] Worker ready on GPU {gpu_idx}, {memory} MiB", flush=True)
             return True
         print(f"[Diarize] Worker failed: {msg.get('error')}", flush=True)
     except queue.Empty:
@@ -1166,6 +1201,7 @@ def _kill_diarize_worker(withdrawn: str = "") -> str:
     """End the diarization process to release its VRAM; returns what still runs ("" when proven gone).
     A job in flight gets ``withdrawn`` as its error, so the transcript comes without speakers."""
     global _diarize_process, _diarize_request_queue, _diarize_result_queue, _diarize_device_index, _diarize_uuid
+    global _diarize_host_pid
 
     if _diarize_process is not None:
         print(f"[Diarize] Ending worker (PID {_diarize_process.pid}, GPU {_diarize_device_index})", flush=True)
@@ -1185,6 +1221,7 @@ def _kill_diarize_worker(withdrawn: str = "") -> str:
     _diarize_result_queue = None
     _diarize_device_index = None
     _diarize_uuid = ""
+    _diarize_host_pid = None
     return ""
 
 
@@ -1644,9 +1681,9 @@ def status():
         "gpu_device_index": _gpu_device_index,
         "gpu_worker_pid": _gpu_process.pid if gpu_alive else None,
         # Which card holds what, by UUID (indices differ between machines and containers), and what the
-        # worker took there right after loading. GPU-Orc reads these to free cards without guessing.
+        # worker holds there now. GPU-Orc reads these to free cards without guessing.
         "gpu_uuid": _gpu_uuid if gpu_alive else None,
-        "gpu_footprint_mib": _gpu_footprint_mib if gpu_alive else None,
+        "gpu_memory_mib": _process_vram_mib(_gpu_uuid, _gpu_host_pid) if gpu_alive else None,
         "diarize_loaded": diarize_alive,
         "diarize_gpu_uuid": _diarize_uuid if diarize_alive else None,
         # SSOT for clients building a dropdown (AIfred STT tab, the web page).
@@ -1736,21 +1773,22 @@ def unload():
 _GPU_ITEMS = ("gpu-worker", "diarize-worker")
 
 
+def _memory_by_card(gpu_uuid: str, host_pid: int | None) -> dict[str, int] | None:
+    memory = _process_vram_mib(gpu_uuid, host_pid)
+    return {gpu_uuid: memory} if memory else None
+
+
 @app.route("/gpu/holders", methods=["GET"])
 def gpu_holders():
     """The GPU workers that run, with the card each was started on (from its configuration, always
-    known), the memory the GPU worker took when loading, and whether it works right now."""
+    known), the memory each holds there now (CUDA context included), and whether it works right now."""
     holders = []
     if _gpu_process is not None and _gpu_process.is_alive():
-        holders.append({
-            "item": "gpu-worker",
-            "gpu_uuids": [_gpu_uuid],
-            "memory_mib": {_gpu_uuid: _gpu_footprint_mib} if _gpu_footprint_mib else None,
-            "busy": _gpu_busy,
-        })
+        holders.append({"item": "gpu-worker", "gpu_uuids": [_gpu_uuid],
+                        "memory_mib": _memory_by_card(_gpu_uuid, _gpu_host_pid), "busy": _gpu_busy})
     if _diarize_process is not None and _diarize_process.is_alive():
-        holders.append({"item": "diarize-worker", "gpu_uuids": [_diarize_uuid], "memory_mib": None,
-                        "busy": _diarize_busy})
+        holders.append({"item": "diarize-worker", "gpu_uuids": [_diarize_uuid],
+                        "memory_mib": _memory_by_card(_diarize_uuid, _diarize_host_pid), "busy": _diarize_busy})
     return jsonify({"holders": holders})
 
 
