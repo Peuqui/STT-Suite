@@ -40,6 +40,10 @@ service, errors as JSON, and a README in German and in English. (The Docker cont
   state on the CPU and the GPU, their need and buttons to release them and for the burn-in, the runtime configuration, and a test that
   transcribes a file or a recording from the microphone on the chosen device. It is plain HTML, CSS and JavaScript in
   `ui/` and uses the same HTTP calls as any other client.
+- **The dictation button for every program that records speech.** The STT-Suite's logo as a round badge with its three
+  phases (ready, taking speech in, transcribing) and the small GPU mark, in `ui/badge/` (`badge.svg`, `badge.css`; the
+  colours are CSS variables a program sets). It is the one source: `python3 scripts/sync_badge.py` hands it to the programs in
+  `scripts/badge-consumers.json` (which also lists who uses the service), `--check` shows where a copy is out of date.
 
 ## Requirements
 

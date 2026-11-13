@@ -1,0 +1,53 @@
+{
+  "_comment": "The programs that show the dictation button and the programs that use the STT-Suite. The one list the sync script (scripts/sync_badge.py) reads; a program that starts to use the service or to take speech in comes in here, and a copy that is not in it never gets the button. Paths are relative to the folder that holds the repos next to this one.",
+  "buttons": [
+    {
+      "name": "STT-Suite",
+      "kind": "source",
+      "repo": "STT-Suite",
+      "uses": "ui/test.js and ui/dictation-mic.js (the page's test dictation) read ui/badge/ itself",
+      "speech": "the service itself"
+    },
+    {
+      "name": "AIfred-Intelligence",
+      "kind": "vue",
+      "repo": "AIfred-Intelligence",
+      "css": "frontend/src/assets/dictation-badge/badge.css",
+      "component": "frontend/src/components/DictationBadge.vue",
+      "uses": "frontend/src/components/ChatInput.vue (microphone, GPU mark, spinner)",
+      "speech": "STT-Suite"
+    },
+    {
+      "name": "Agent-Orc",
+      "kind": "vue",
+      "repo": "Agent-Orc",
+      "css": "frontend/src/assets/dictation-badge/badge.css",
+      "component": "frontend/src/components/DictationBadge.vue",
+      "uses": "frontend/src/components/DictationMic.vue (microphone, GPU mark), DictationPointer.vue (badge at the pointer)",
+      "speech": "STT-Suite"
+    },
+    {
+      "name": "Mundwerk",
+      "kind": "html",
+      "repo": "Mundwerk",
+      "css": "ui/dictation-badge.css",
+      "page": "ui/badge.html",
+      "uses": "ui/badge.html and ui/badge.js (the badge that follows the pointer)",
+      "speech": "STT-Suite"
+    },
+    {
+      "name": "AI-ATC",
+      "kind": "vue",
+      "repo": "AI-ATC",
+      "css": "frontend/src/assets/dictation-badge/badge.css",
+      "component": "frontend/src/components/DictationBadge.vue",
+      "uses": "frontend/src/components/ChatInput.vue (push to talk)",
+      "speech": "its own Whisper (backend/stt/whisper.py), not the STT-Suite; the GPU mark only where it knows its Whisper is on the GPU"
+    }
+  ],
+  "service_without_button": [
+    { "name": "GPU-Orc", "how": "asks the service to free the cards (/gpu/release)" },
+    { "name": "TTS-Suite", "how": "the other half of the pair; only the service and the GPU release" },
+    { "name": "WakeWordResearch", "how": "tools/validate_tts_stt.py, a check script" }
+  ]
+}

@@ -1,4 +1,5 @@
 import { service } from './api.js'
+import { dictationMic, loadBadge } from './dictation-mic.js'
 import { h, replaceChildren } from './dom.js'
 import { formatNumber } from './format.js'
 import { t } from './i18n.js'
@@ -11,13 +12,28 @@ export function testView({ show, fail }) {
   let recorder = null
   let running = false
   let result = null
+  let gpuLoaded = false
+  let statusTimer
   const choice = { device: 'cpu', engine: '', model: '', quality: '', language: '', diarize: false }
 
   async function load() {
     try {
+      await loadBadge()
       config = await service.config()
+      await refreshStatus()
       render()
     } catch (error) { fail(error) }
+  }
+
+  // Whether the service has a model on the GPU (the mark at the microphone). Its worker ends itself after the idle
+  // time, so the page asks again then; otherwise the mark would outlive the model.
+  async function refreshStatus() {
+    clearTimeout(statusTimer)
+    const status = await service.status()
+    gpuLoaded = status.gpu_loaded
+    if (gpuLoaded && status.gpu_ttl_remaining_seconds !== undefined) {
+      statusTimer = setTimeout(() => refreshStatus().then(render).catch(fail), (status.gpu_ttl_remaining_seconds + 2) * 1000)
+    }
   }
 
   async function startRecording() {
@@ -57,6 +73,7 @@ export function testView({ show, fail }) {
       fail(error.status === 503 ? new Error(`${error.message} — ${t('gpuUnavailable')}`) : error)
     }
     running = false
+    await refreshStatus().catch(fail)
     render()
   }
 
@@ -93,13 +110,19 @@ export function testView({ show, fail }) {
           // and the file's name is shown next to the buttons.
           h('input', { type: 'file', id: 'audio-file', hidden: true, accept: 'audio/*,video/*', onchange: (event) => { const file = event.target.files[0]; audio = file ? { blob: file, name: file.name } : audio; render() } }),
           h('button', { onclick: () => document.getElementById('audio-file').click() }, t('chooseFile')),
-          recorder === null
-            ? h('button', { onclick: startRecording }, t('record'))
-            : h('button', { class: 'primary', onclick: () => recorder.stop() }, t('stopRecording')),
-          recorder !== null ? h('span', { class: 'status busy' }, t('recording')) : null,
+          dictationMic({
+            phase: recorder !== null ? 'listening' : running ? 'transcribing' : 'ready',
+            gpu: gpuLoaded && choice.device !== 'cpu',
+            title: t(recorder === null ? 'record' : 'stopRecording'),
+            gpuTitle: t('micOnGpu'),
+            workingTitle: t('working'),
+            disabled: running,
+            onclick: recorder === null ? startRecording : () => recorder.stop(),
+          }),
           audio !== null && recorder === null ? h('span', { class: 'muted' }, audio.name) : null),
         h('label', {}, t('deviceField')),
-        h('select', { onchange: (event) => (choice.device = event.target.value) },
+        // Drawn again, because the GPU mark at the microphone depends on it.
+        h('select', { onchange: (event) => { choice.device = event.target.value; render() } },
           ['cpu', 'cuda', 'auto'].map((device) => h('option', { value: device, selected: device === choice.device }, t(`device_${device}`)))),
         h('label', {}, t('engineField')), overrideSelect('engine', config.engines),
         h('label', {}, t('modelOverride')), overrideSelect('model', config.available_models),
