@@ -42,8 +42,9 @@ service, errors as JSON, and a README in German and in English. (The Docker cont
   `ui/` and uses the same HTTP calls as any other client.
 - **The dictation button for every program that records speech.** The STT-Suite's logo as a round badge with its three
   phases (ready, taking speech in, transcribing) and the small GPU mark, in `ui/badge/` (`badge.svg`, `badge.css`; the
-  colours are CSS variables a program sets). It is the one source: `python3 scripts/sync_badge.py` hands it to the programs in
-  `scripts/badge-consumers.json` (which also lists who uses the service), `--check` shows where a copy is out of date.
+  colours are CSS variables a program sets). It is the one source: `python3 scripts/sync_ui.py` hands it (and the TTS-Suite's speaker button) to the programs in
+  `scripts/ui-consumers.json` (which also lists who uses the service), `--check` shows where a copy is out of date. A program
+  that needs it as picture files (a tray icon, a program icon) gets them from `scripts/render_badge_icons.py` (Chrome and Pillow).
 
 ## Requirements
 

@@ -2,10 +2,10 @@
 
     python3 scripts/render_badge_icons.py
 
-The programs and their files are in scripts/badge-consumers.json (the "raster" lists): every file is the badge in
+The programs and their files are in scripts/ui-consumers.json (the "raster" list in a program's "badge"): every file is the badge in
 one state (ready, listening, transcribing, error), so the tray and the program icon look like the badge everywhere
 else. A program with an "overview" there also gets one sheet that shows all of them (enlarged, in tray size, on a dark
-and a light taskbar, and the program icon), made from the same pictures. The result is a picture, not text, so scripts/sync_badge.py --check does not compare bytes: it compares the
+and a light taskbar, and the program icon), made from the same pictures. The result is a picture, not text, so scripts/sync_ui.py --check does not compare bytes: it compares the
 stamp this writes next to the icons with the hash of the source (source_hash).
 
 Needs Chrome (google-chrome, headless, to draw the svg with its css) and Pillow (to cut, shrink and write the files).
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 SUITE = Path(__file__).resolve().parent.parent
 SOURCE = SUITE / "ui" / "badge"
-CONSUMERS = Path(__file__).resolve().parent / "badge-consumers.json"
+CONSUMERS = Path(__file__).resolve().parent / "ui-consumers.json"
 # The repos sit next to each other (the list gives their folder names).
 REPOS = SUITE.parent
 
@@ -146,19 +146,19 @@ def write_overview(pictures: dict[tuple[str, str], "Picture"], target: Path) -> 
 
 
 def main() -> None:
-    consumers = [consumer for consumer in json.loads(CONSUMERS.read_text(encoding="utf-8"))["buttons"] if "raster" in consumer]
+    programs = [(program, program["badge"]) for program in json.loads(CONSUMERS.read_text(encoding="utf-8"))["programs"] if "raster" in program.get("badge", {})]
     stamp = source_hash()
     with tempfile.TemporaryDirectory(prefix="badge-icons-") as directory:
         pictures = {(state, profile): render_state(state, profile, Path(directory)) for state in STATES for profile in PROFILES}
-    for consumer in consumers:
-        repo = REPOS / consumer["repo"]
-        for entry in consumer["raster"]:
+    for program, block in programs:
+        repo = REPOS / program["repo"]
+        for entry in block["raster"]:
             write_icon(pictures[(entry["state"], entry.get("profile", "default"))], repo / entry["file"], entry.get("size"))
-            print(f"{consumer['name']}: {entry['file']} ({entry['state']})")
-        if "overview" in consumer:
-            write_overview(pictures, repo / consumer["overview"])
-            print(f"{consumer['name']}: {consumer['overview']} (overview)")
-        (repo / consumer["raster_stamp"]).write_text(stamp + "\n", encoding="utf-8")
+            print(f"{program['name']}: {entry['file']} ({entry['state']})")
+        if "overview" in block:
+            write_overview(pictures, repo / block["overview"])
+            print(f"{program['name']}: {block['overview']} (overview)")
+        (repo / block["raster_stamp"]).write_text(stamp + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

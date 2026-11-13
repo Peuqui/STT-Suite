@@ -42,9 +42,10 @@ heißt `stt-suite`.)
   dieselben HTTP-Aufrufe wie jeder andere Client.
 - **Der Diktier-Knopf für jedes Programm, das Sprache aufnimmt.** Das Logo der STT-Suite als rundes Abzeichen mit seinen drei
   Zuständen (bereit, nimmt Sprache auf, transkribiert) und dem kleinen GPU-Zeichen, in `ui/badge/` (`badge.svg`, `badge.css`;
-  die Farben sind CSS-Variablen, die ein Programm setzt). Das ist die eine Quelle: `python3 scripts/sync_badge.py` verteilt sie an
-  die Programme aus `scripts/badge-consumers.json` (die Datei nennt auch, wer den Dienst nutzt), `--check` zeigt, wo eine Kopie
-  veraltet ist.
+  die Farben sind CSS-Variablen, die ein Programm setzt). Das ist die eine Quelle: `python3 scripts/sync_ui.py` verteilt sie (und den
+  Lautsprecher-Knopf der TTS-Suite) an die Programme aus `scripts/ui-consumers.json` (die Datei nennt auch, wer den Dienst nutzt),
+  `--check` zeigt, wo eine Kopie veraltet ist. Ein Programm, das sie als Bilddateien braucht (Tray-Symbol, Programm-Icon),
+  bekommt sie von `scripts/render_badge_icons.py` (Chrome und Pillow).
 
 ## Voraussetzungen
 
