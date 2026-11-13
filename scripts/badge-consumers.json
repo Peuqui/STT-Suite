@@ -32,8 +32,22 @@
       "repo": "Mundwerk",
       "css": "ui/dictation-badge.css",
       "page": "ui/badge.html",
-      "uses": "ui/badge.html and ui/badge.js (the badge that follows the pointer)",
-      "speech": "STT-Suite"
+      "uses": "ui/badge.html and ui/badge.js (the badge that follows the pointer); the tray icon (src-tauri/src/tray.rs) and the program icon are the files below",
+      "speech": "STT-Suite",
+      "raster_stamp": "src-tauri/icons/badge-source.sha256",
+      "raster": [
+        { "file": "src-tauri/icons/tray-idle.png", "state": "ready", "size": 64 },
+        { "file": "src-tauri/icons/tray-listening.png", "state": "listening", "size": 64 },
+        { "file": "src-tauri/icons/tray-transcribing.png", "state": "transcribing", "size": 64 },
+        { "file": "src-tauri/icons/tray-error.png", "state": "error", "size": 64 },
+        { "file": "src-tauri/icons/icon.png", "state": "ready", "size": 512 },
+        { "file": "src-tauri/icons/128x128@2x.png", "state": "ready", "size": 256 },
+        { "file": "src-tauri/icons/128x128.png", "state": "ready", "size": 128 },
+        { "file": "src-tauri/icons/32x32.png", "state": "ready", "size": 32 },
+        { "file": "src-tauri/icons/icon.ico", "state": "ready" },
+        { "file": "src-tauri/icons/icon.icns", "state": "ready" },
+        { "file": "ui/icon.png", "state": "ready", "size": 32 }
+      ]
     },
     {
       "name": "AI-ATC",

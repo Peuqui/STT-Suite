@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import render_badge_icons
 import sync_badge
 
 REAL_SVG = (sync_badge.SOURCE / "badge.svg").read_text(encoding="utf-8")
@@ -14,6 +15,7 @@ KEYS_PER_KIND = {
     "vue": {"name", "kind", "repo", "uses", "speech", "css", "component"},
     "html": {"name", "kind", "repo", "uses", "speech", "css", "page"},
 }
+RASTER_KEYS = {"raster", "raster_stamp"}
 
 
 def test_vue_component_keeps_the_phase_on_the_svg_root() -> None:
@@ -54,4 +56,21 @@ def test_every_consumer_of_the_list_has_what_its_kind_needs() -> None:
     consumers = json.loads(sync_badge.CONSUMERS.read_text(encoding="utf-8"))["buttons"]
     assert {consumer["name"] for consumer in consumers} >= {"STT-Suite", "AIfred-Intelligence", "Agent-Orc", "Mundwerk", "AI-ATC"}
     for consumer in consumers:
-        assert set(consumer) == KEYS_PER_KIND[consumer["kind"]], consumer["name"]
+        keys = set(consumer) - RASTER_KEYS
+        assert keys == KEYS_PER_KIND[consumer["kind"]], consumer["name"]
+        assert ("raster" in consumer) == ("raster_stamp" in consumer), consumer["name"]
+
+
+def test_every_raster_file_has_a_known_state_and_a_size_where_it_needs_one() -> None:
+    consumers = json.loads(sync_badge.CONSUMERS.read_text(encoding="utf-8"))["buttons"]
+    for consumer in (consumer for consumer in consumers if "raster" in consumer):
+        for entry in consumer["raster"]:
+            assert entry["state"] in render_badge_icons.STATES, entry["file"]
+            suffix = Path(entry["file"]).suffix
+            assert suffix in {".png", ".ico", ".icns"}, entry["file"]
+            assert ("size" in entry) == (suffix == ".png"), entry["file"]
+
+
+def test_the_source_hash_follows_the_badge_files() -> None:
+    assert render_badge_icons.source_hash() == render_badge_icons.source_hash()
+    assert len(render_badge_icons.source_hash()) == 64

@@ -6,6 +6,9 @@
 Per kind of program:
   vue   badge.css is copied; DictationBadge.vue is made from badge.svg (prop `phase`, the svg's class follows it).
   html  badge.css is copied; the svg in the marked part of the page is replaced by badge.svg.
+A program that needs files as icons (a tray icon, a program icon) has a "raster" list in the consumer list: those are
+made by render_badge_icons.py (they are pictures, so no bytes are compared); here only its stamp is checked, so a changed
+source shows as an icon set that is out of date.
 Nothing here is edited by hand in the programs: a change belongs in ui/badge/, then this runs again.
 """
 import argparse
@@ -15,6 +18,9 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from render_badge_icons import source_hash
 
 SUITE = Path(__file__).resolve().parent.parent
 SOURCE = SUITE / "ui" / "badge"
@@ -90,6 +96,12 @@ def copies_for(consumer: dict[str, str]) -> list[Copy]:
     return copies
 
 
+def raster_outdated(consumer: dict[str, Any]) -> bool:
+    """Whether the icons of a program were made from another source than the one now (or not at all)."""
+    stamp = REPOS / consumer["repo"] / consumer["raster_stamp"]
+    return not stamp.exists() or stamp.read_text(encoding="utf-8").strip() != source_hash()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="change nothing; exit 1 where a copy differs")
@@ -106,6 +118,10 @@ def main() -> int:
             if not check_only:
                 copy.path.parent.mkdir(parents=True, exist_ok=True)
                 copy.path.write_text(copy.content, encoding="utf-8")
+    for consumer in consumers:
+        if "raster" in consumer and raster_outdated(consumer):
+            outdated += 1
+            print(f"{consumer['name']}: the icons are out of date, run scripts/render_badge_icons.py")
     if outdated == 0:
         print("All copies are up to date.")
     return 1 if check_only and outdated else 0
