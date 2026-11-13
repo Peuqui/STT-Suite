@@ -42,6 +42,13 @@ ERROR_CSS = """
 """
 # A picture shows the shape at rest: no animation is stopped half way (the bars of "listening" would stand uneven).
 STILL_CSS = "*{animation:none!important}"
+# For the sizes of a tray icon (16 to 32 px) the full badge is too fine: its thin ring fades and its waves are small, so it
+# looks smaller than the icons beside it. The profile "small" has a thicker ring and bigger bars (both arcs stay).
+SMALL_CSS = """
+.dictation-badge .rim { stroke-width: 48; }
+.dictation-badge g, .dictation-badge .arc { transform-box: view-box; transform-origin: 259px 256px; transform: scale(1.15); }
+"""
+PROFILES = {"default": "", "small": SMALL_CSS}
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 # The overview sheet: what its parts are called (German and English, one sheet for both READMEs) and the taskbars it shows.
 STATE_LABELS = {"ready": "bereit / ready", "listening": "hört zu / listening", "transcribing": "transkribiert / transcribing", "error": "Fehler / error"}
@@ -56,27 +63,27 @@ ICNS_SIZES = (16, 32, 128, 256, 512)
 def source_hash() -> str:
     """What the icons were made from: the badge's files and what this script adds to them."""
     digest = hashlib.sha256()
-    for part in ((SOURCE / "badge.svg").read_bytes(), (SOURCE / "badge.css").read_bytes(), ERROR_CSS.encode(), STILL_CSS.encode(), str(RENDER_PX).encode()):
+    for part in ((SOURCE / "badge.svg").read_bytes(), (SOURCE / "badge.css").read_bytes(), ERROR_CSS.encode(), STILL_CSS.encode(), SMALL_CSS.encode(), str(RENDER_PX).encode()):
         digest.update(part)
     return digest.hexdigest()
 
 
-def page(state: str) -> str:
+def page(state: str, profile: str = "default") -> str:
     svg = (SOURCE / "badge.svg").read_text(encoding="utf-8").replace('class="dictation-badge"', f'class="dictation-badge{PHASE_CLASS[state]}"')
     css = (SOURCE / "badge.css").read_text(encoding="utf-8") + ERROR_CSS
     return (
         '<!doctype html><html><head><meta charset="utf-8"><style>'
-        f"html,body{{margin:0;padding:0;background:transparent;overflow:hidden}}svg{{width:{RENDER_PX}px;height:{RENDER_PX}px;display:block}}{css}{STILL_CSS}"
+        f"html,body{{margin:0;padding:0;background:transparent;overflow:hidden}}svg{{width:{RENDER_PX}px;height:{RENDER_PX}px;display:block}}{css}{PROFILES[profile]}{STILL_CSS}"
         f"</style></head><body>{svg}</body></html>"
     )
 
 
-def render_state(state: str, work: Path) -> "Picture":
+def render_state(state: str, profile: str, work: Path) -> "Picture":
     from PIL import Image
 
-    source = work / f"{state}.html"
-    source.write_text(page(state), encoding="utf-8")
-    target = work / f"{state}.png"
+    source = work / f"{state}-{profile}.html"
+    source.write_text(page(state, profile), encoding="utf-8")
+    target = work / f"{state}-{profile}.png"
     subprocess.run(
         [CHROME, "--headless=new", "--no-sandbox", f"--user-data-dir={work / 'chrome'}", "--default-background-color=00000000", "--hide-scrollbars",
          f"--window-size={RENDER_PX},{RENDER_PX + WINDOW_EXTRA_PX}", "--force-device-scale-factor=1", f"--screenshot={target}", f"file://{source}"],
@@ -99,7 +106,7 @@ def write_icon(picture: "Picture", target: Path, size: int | None) -> None:
         raise ValueError(f"{target.name}: a png needs a \"size\", otherwise only .ico and .icns are written")
 
 
-def write_overview(pictures: dict[str, "Picture"], target: Path) -> None:
+def write_overview(pictures: dict[tuple[str, str], "Picture"], target: Path) -> None:
     """One sheet with every state: enlarged on both taskbars, in the sizes Windows shows, and the program icon."""
     from PIL import Image, ImageDraw, ImageFont
 
@@ -111,7 +118,7 @@ def write_overview(pictures: dict[str, "Picture"], target: Path) -> None:
     sheet = Image.new("RGBA", (width, icon_y + 26 + 200 + margin), SHEET_BACKGROUND)
     draw = ImageDraw.Draw(sheet)
     draw.text((margin, 12), "Mundwerk: Symbole aus der Quelle der STT-Suite (ui/badge) / icons from the STT-Suite's source", font=title_font, fill="white")
-    trays = {state: pictures[state].resize((TRAY_PX, TRAY_PX), Image.Resampling.LANCZOS) for state in STATES}
+    trays = {state: pictures[(state, "small")].resize((TRAY_PX, TRAY_PX), Image.Resampling.LANCZOS) for state in STATES}
     for column, state in enumerate(STATES):
         x = margin + column * cell
         draw.text((x, 44), STATE_LABELS[state], font=label_font, fill="white")
@@ -131,7 +138,7 @@ def write_overview(pictures: dict[str, "Picture"], target: Path) -> None:
     x = margin
     for side in (200, 128, 32):
         tile = Image.new("RGBA", (side, side), (60, 60, 60, 255))
-        tile.alpha_composite(pictures["ready"].resize((side, side), Image.Resampling.LANCZOS))
+        tile.alpha_composite(pictures[("ready", "default")].resize((side, side), Image.Resampling.LANCZOS))
         sheet.paste(tile, (x, icon_y + 26))
         x += side + 20
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -142,11 +149,11 @@ def main() -> None:
     consumers = [consumer for consumer in json.loads(CONSUMERS.read_text(encoding="utf-8"))["buttons"] if "raster" in consumer]
     stamp = source_hash()
     with tempfile.TemporaryDirectory(prefix="badge-icons-") as directory:
-        pictures = {state: render_state(state, Path(directory)) for state in STATES}
+        pictures = {(state, profile): render_state(state, profile, Path(directory)) for state in STATES for profile in PROFILES}
     for consumer in consumers:
         repo = REPOS / consumer["repo"]
         for entry in consumer["raster"]:
-            write_icon(pictures[entry["state"]], repo / entry["file"], entry.get("size"))
+            write_icon(pictures[(entry["state"], entry.get("profile", "default"))], repo / entry["file"], entry.get("size"))
             print(f"{consumer['name']}: {entry['file']} ({entry['state']})")
         if "overview" in consumer:
             write_overview(pictures, repo / consumer["overview"])

@@ -66,6 +66,7 @@ def test_every_raster_file_has_a_known_state_and_a_size_where_it_needs_one() -> 
     for consumer in (consumer for consumer in consumers if "raster" in consumer):
         for entry in consumer["raster"]:
             assert entry["state"] in render_badge_icons.STATES, entry["file"]
+            assert entry.get("profile", "default") in render_badge_icons.PROFILES, entry["file"]
             suffix = Path(entry["file"]).suffix
             assert suffix in {".png", ".ico", ".icns"}, entry["file"]
             assert ("size" in entry) == (suffix == ".png"), entry["file"]
