@@ -15,7 +15,7 @@ KEYS_PER_KIND = {
     "vue": {"name", "kind", "repo", "uses", "speech", "css", "component"},
     "html": {"name", "kind", "repo", "uses", "speech", "css", "page"},
 }
-RASTER_KEYS = {"raster", "raster_stamp"}
+RASTER_KEYS = {"raster", "raster_stamp", "overview"}
 
 
 def test_vue_component_keeps_the_phase_on_the_svg_root() -> None:

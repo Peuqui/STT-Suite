@@ -4,7 +4,8 @@
 
 The programs and their files are in scripts/badge-consumers.json (the "raster" lists): every file is the badge in
 one state (ready, listening, transcribing, error), so the tray and the program icon look like the badge everywhere
-else. The result is a picture, not text, so scripts/sync_badge.py --check does not compare bytes: it compares the
+else. A program with an "overview" there also gets one sheet that shows all of them (enlarged, in tray size, on a dark
+and a light taskbar, and the program icon), made from the same pictures. The result is a picture, not text, so scripts/sync_badge.py --check does not compare bytes: it compares the
 stamp this writes next to the icons with the hash of the source (source_hash).
 
 Needs Chrome (google-chrome, headless, to draw the svg with its css) and Pillow (to cut, shrink and write the files).
@@ -42,6 +43,13 @@ ERROR_CSS = """
 # A picture shows the shape at rest: no animation is stopped half way (the bars of "listening" would stand uneven).
 STILL_CSS = "*{animation:none!important}"
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+# The overview sheet: what its parts are called (German and English, one sheet for both READMEs) and the taskbars it shows.
+STATE_LABELS = {"ready": "bereit / ready", "listening": "hört zu / listening", "transcribing": "transkribiert / transcribing", "error": "Fehler / error"}
+TASKBARS = ((32, 32, 32, 255), (243, 243, 243, 255))
+TRAY_PX = 64
+TRAY_SIZES = (16, 24, 32)
+SHEET_BACKGROUND = (40, 40, 40, 255)
+SHEET_FONT = "DejaVuSans.ttf"
 ICNS_SIZES = (16, 32, 128, 256, 512)
 
 
@@ -91,6 +99,45 @@ def write_icon(picture: "Picture", target: Path, size: int | None) -> None:
         raise ValueError(f"{target.name}: a png needs a \"size\", otherwise only .ico and .icns are written")
 
 
+def write_overview(pictures: dict[str, "Picture"], target: Path) -> None:
+    """One sheet with every state: enlarged on both taskbars, in the sizes Windows shows, and the program icon."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    title_font, label_font = ImageFont.truetype(SHEET_FONT, 18), ImageFont.truetype(SHEET_FONT, 15)
+    zoom, cell, margin = 256, 280, 20
+    width = margin * 2 + cell * len(STATES) - (cell - zoom)
+    strip_y = 70 + 2 * (zoom + 14) + 8
+    icon_y = strip_y + 90
+    sheet = Image.new("RGBA", (width, icon_y + 26 + 200 + margin), SHEET_BACKGROUND)
+    draw = ImageDraw.Draw(sheet)
+    draw.text((margin, 12), "Mundwerk: Symbole aus der Quelle der STT-Suite (ui/badge) / icons from the STT-Suite's source", font=title_font, fill="white")
+    trays = {state: pictures[state].resize((TRAY_PX, TRAY_PX), Image.Resampling.LANCZOS) for state in STATES}
+    for column, state in enumerate(STATES):
+        x = margin + column * cell
+        draw.text((x, 44), STATE_LABELS[state], font=label_font, fill="white")
+        for row, taskbar in enumerate(TASKBARS):
+            tile = Image.new("RGBA", (zoom, zoom), taskbar)
+            tile.alpha_composite(trays[state].resize((zoom, zoom), Image.Resampling.NEAREST))
+            sheet.paste(tile, (x, 70 + row * (zoom + 14)))
+    draw.text((margin, strip_y), f"Tray-Größen / tray sizes ({' / '.join(str(size) for size in TRAY_SIZES)} px), dunkel und hell / dark and light:", font=label_font, fill="white")
+    strip_width = len(STATES) * len(TRAY_SIZES) * 44 + 10
+    for index, taskbar in enumerate(TASKBARS):
+        strip = Image.new("RGBA", (strip_width, 40), taskbar)
+        for column, state in enumerate(STATES):
+            for position, size in enumerate(TRAY_SIZES):
+                strip.alpha_composite(trays[state].resize((size, size), Image.Resampling.LANCZOS), ((column * len(TRAY_SIZES) + position) * 44 + 8, (40 - size) // 2))
+        sheet.paste(strip, (margin + index * (strip_width + 40), strip_y + 28))
+    draw.text((margin, icon_y), "Programm-Icon / program icon: 512 (hier 200 / shown at 200), 128, 32 px", font=label_font, fill="white")
+    x = margin
+    for side in (200, 128, 32):
+        tile = Image.new("RGBA", (side, side), (60, 60, 60, 255))
+        tile.alpha_composite(pictures["ready"].resize((side, side), Image.Resampling.LANCZOS))
+        sheet.paste(tile, (x, icon_y + 26))
+        x += side + 20
+    target.parent.mkdir(parents=True, exist_ok=True)
+    sheet.convert("RGB").save(target)
+
+
 def main() -> None:
     consumers = [consumer for consumer in json.loads(CONSUMERS.read_text(encoding="utf-8"))["buttons"] if "raster" in consumer]
     stamp = source_hash()
@@ -101,6 +148,9 @@ def main() -> None:
         for entry in consumer["raster"]:
             write_icon(pictures[entry["state"]], repo / entry["file"], entry.get("size"))
             print(f"{consumer['name']}: {entry['file']} ({entry['state']})")
+        if "overview" in consumer:
+            write_overview(pictures, repo / consumer["overview"])
+            print(f"{consumer['name']}: {consumer['overview']} (overview)")
         (repo / consumer["raster_stamp"]).write_text(stamp + "\n", encoding="utf-8")
 
 

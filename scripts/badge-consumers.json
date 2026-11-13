@@ -35,6 +35,7 @@
       "uses": "ui/badge.html and ui/badge.js (the badge that follows the pointer); the tray icon (src-tauri/src/tray.rs) and the program icon are the files below",
       "speech": "STT-Suite",
       "raster_stamp": "src-tauri/icons/badge-source.sha256",
+      "overview": "docs/icons.png",
       "raster": [
         { "file": "src-tauri/icons/tray-idle.png", "state": "ready", "size": 64 },
         { "file": "src-tauri/icons/tray-listening.png", "state": "listening", "size": 64 },
