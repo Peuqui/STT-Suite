@@ -44,7 +44,7 @@ class Access:
         if self.token is None:
             return "this needs a token and none is configured"
         if not secrets.compare_digest(sent, self.token):
-            return f"a valid token is needed ({TOKEN_HEADER})"
+            return f"a valid token of the service is needed, sent in the header {TOKEN_HEADER}"
         return None
 
 

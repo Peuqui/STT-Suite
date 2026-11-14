@@ -2,7 +2,8 @@
 const TEXTS = {
   de: {
     language: 'English', themeLight: 'Hell', themeDark: 'Dunkel', themeAuto: 'Automatisch',
-    token: 'Token', needsToken: 'Dafür ist das Token nötig (oben eintragen).',
+    token: 'Token', needsToken: 'Dafür braucht die Seite das Token der STT-Suite: oben rechts bei „Token“ eintragen. Es steht auf dem Rechner der STT-Suite in der Datei „token“ in ihrem Konfigurationsordner.',
+    tokenWrong: 'Das eingetragene Token gehört nicht zu dieser STT-Suite: oben rechts bei „Token“ das richtige eintragen (Datei „token“ im Konfigurationsordner der STT-Suite).',
     tokenKept: 'Token gespeichert (in diesem Browser).', tokenCleared: 'Token entfernt.',
     tabCatalog: 'Engines', tabConfig: 'Konfiguration', tabTest: 'Probe',
     up: 'Nach oben', down: 'Nach unten', add: 'Hinzufügen', remove: 'Entfernen',
@@ -35,7 +36,8 @@ const TEXTS = {
   },
   en: {
     language: 'Deutsch', themeLight: 'Light', themeDark: 'Dark', themeAuto: 'Automatic',
-    token: 'Token', needsToken: 'This needs the token (enter it above).',
+    token: 'Token', needsToken: 'This needs the token of the STT-Suite: enter it at Token, top right. It is on the STT-Suite\'s machine, in the file "token" in its configuration folder.',
+    tokenWrong: 'The token entered does not belong to this STT-Suite: enter the right one at Token, top right (the file "token" in the STT-Suite\'s configuration folder).',
     tokenKept: 'Token saved (in this browser).', tokenCleared: 'Token removed.',
     tabCatalog: 'Engines', tabConfig: 'Configuration', tabTest: 'Test',
     up: 'Move up', down: 'Move down', add: 'Add', remove: 'Remove',
