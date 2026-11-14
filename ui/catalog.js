@@ -1,18 +1,8 @@
 import { ApiError, service } from './api.js'
 import { cardTable, h, replaceChildren } from './dom.js'
-import { formatNumber } from './format.js'
+import { duration, formatNumber } from './format.js'
 import { t } from './i18n.js'
-
-// How often the page asks again while it is shown: the idle countdown and a worker that starts or ends stay current.
-const REFRESH_MS = 5000
-// How often the page asks for the progress of a running burn-in.
-const BURN_IN_POLL_MS = 1500
-
-// Minutes and seconds past a minute, plain seconds below it.
-function duration(seconds) {
-  if (seconds < 60) return `${seconds} s`
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} min`
-}
+import { BURN_IN_POLL_MS, REFRESH_MS } from './settings.js'
 
 // The catalog: every model of every engine, with where it is loaded and what a card needs for it, a release
 // for each row, and a burn-in that measures what it takes and makes that its budget.
@@ -23,6 +13,8 @@ export function catalogView({ show, fail }) {
   let burnIn = { running: false }
   // A release the GPU refused because it is transcribing: offered once more with force.
   let offerForce = false
+  // A release under way: its buttons stay off and the rows it touches say so, so it is not pressed twice.
+  let releasing = false
 
   async function load() {
     try {
@@ -80,7 +72,9 @@ export function catalogView({ show, fail }) {
 
   // One button may release on both sides; the page is read again afterwards.
   async function release(...steps) {
-    for (const step of steps) await step()
+    releasing = true
+    render()
+    try { for (const step of steps) await step() } finally { releasing = false }
     await load()
   }
 
@@ -95,6 +89,7 @@ export function catalogView({ show, fail }) {
 
   function stateOf(row) {
     if (row.loaded_on.length === 0) return h('span', { class: 'status idle' }, t('idle'))
+    if (releasing) return h('span', { class: 'status busy' }, t('busyRelease'))
     const onGpu = row.loaded_on.includes('gpu')
     const busy = onGpu && status.gpu_busy
     return [
@@ -107,15 +102,15 @@ export function catalogView({ show, fail }) {
     if (status === null) return
     const measured = (row) => h('span', { class: row.measured ? 'status loaded' : 'muted' }, t(row.measured ? 'measured' : 'estimate'))
     const buttons = (row) => h('div', { class: 'buttons' },
-      h('button', { class: 'small', onclick: () => release(...stepsFor(row)), disabled: row.loaded_on.length === 0 }, t('release')),
+      h('button', { class: 'small', onclick: () => release(...stepsFor(row)), disabled: releasing || row.loaded_on.length === 0 }, t('release')),
       h('button', { class: 'small', onclick: () => startBurnIn(row), disabled: burnIn.running || status.gpu_busy }, t('burnIn')))
     replaceChildren(root,
       h('h2', {}, t('tabCatalog')),
       h('p', { class: 'muted' }, t('catalogHint')),
       h('div', { class: 'row' },
         h('button', { onclick: load }, t('reload')),
-        h('button', { onclick: () => release(() => releaseGpu(), unloadCpu) }, t('releaseAll')),
-        offerForce ? h('button', { class: 'primary', onclick: () => release(() => releaseGpu(true)) }, t('force')) : null),
+        h('button', { onclick: () => release(() => releaseGpu(), unloadCpu), disabled: releasing }, t('releaseAll')),
+        offerForce ? h('button', { class: 'primary', onclick: () => release(() => releaseGpu(true)), disabled: releasing }, t('force')) : null),
       burnIn.running ? h('p', { class: 'status busy' }, burnInText()) : null,
       cardTable([t('engine'), t('model'), t('state'), t('memoryNeeded'), t('source'), ''],
         rows.map((row) => [row.engine, row.model, stateOf(row), formatNumber(row.needed_mib), measured(row), buttons(row)])),
@@ -128,7 +123,7 @@ export function catalogView({ show, fail }) {
   }
 
   setInterval(() => {
-    if (!root.closest('[hidden]') && !document.hidden) load()
+    if (!root.closest('[hidden]') && !document.hidden && !releasing) load()
   }, REFRESH_MS)
 
   return { root, load, render }

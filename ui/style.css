@@ -39,7 +39,7 @@ th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: lef
 th { color: var(--muted); font-weight: 600; white-space: nowrap; }
 .table-scroll { overflow-x: auto; }
 input, select, textarea, button { font: inherit; color: inherit; }
-input[type="text"], input[type="number"], select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+input[type="text"], input[type="number"], input[type="password"], select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 input[type="number"] { width: 7em; }
 td input[type="text"] { width: 100%; min-width: 9em; }
 td input[type="number"] { width: 100%; min-width: 5.5em; }
@@ -93,7 +93,8 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .fields { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; align-items: center; }
 .fields > label { color: var(--muted); }
 @media (max-width: 640px) { .fields { grid-template-columns: 1fr; gap: 2px; } .fields > label { margin-top: 8px; } }
-fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; padding: 8px 14px 12px; }
+/* min-width 0: a fieldset is at least as wide as its content by default, so a wide table would not scroll inside it. */
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; padding: 8px 14px 12px; min-width: 0; }
 legend { color: var(--heading); font-weight: 600; padding: 0 6px; }
 fieldset > p { margin: 4px 0 8px; }
 /* The list the automatic mode goes through: one line per entry, a switched-off one dimmed. */

@@ -3,12 +3,12 @@ import { catalogView } from './catalog.js'
 import { configView } from './config.js'
 import { h } from './dom.js'
 import { currentLanguage, onLanguageChange, t, toggleLanguage } from './i18n.js'
+import { NOTICE_MS } from './settings.js'
 import { testView } from './test.js'
 
 // The page: its views behind tabs, the language and the colours. Light or dark follows the system until one is chosen.
 const message = document.getElementById('message')
 // A message fades after a few seconds (an error stays longer) and goes at a tap.
-const NOTICE_MS = { ok: 4000, error: 10000 }
 let hideTimer
 function say(text, kind) {
   clearTimeout(hideTimer)

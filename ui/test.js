@@ -3,6 +3,7 @@ import { dictationMic, loadBadge } from './dictation-mic.js'
 import { h, replaceChildren } from './dom.js'
 import { formatNumber } from './format.js'
 import { t } from './i18n.js'
+import { TEST_DEVICE } from './settings.js'
 
 // Transcribes a file or a recording from the microphone with the chosen device and engine.
 export function testView({ show, fail }) {
@@ -14,7 +15,7 @@ export function testView({ show, fail }) {
   let result = null
   let gpuLoaded = false
   let statusTimer
-  const choice = { device: 'cpu', engine: '', model: '', quality: '', language: '', diarize: false }
+  const choice = { device: TEST_DEVICE, engine: '', model: '', quality: '', language: '', diarize: false }
 
   async function load() {
     try {

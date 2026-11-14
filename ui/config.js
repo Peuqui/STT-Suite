@@ -12,6 +12,7 @@ export function configView({ show, fail }) {
   async function load() {
     try {
       ;[config, rows] = await Promise.all([service.config(), service.engines()])
+      fillDraft()
       render()
     } catch (error) { fail(error) }
   }
@@ -53,6 +54,9 @@ export function configView({ show, fail }) {
     render()
   }
 
+  // A new entry of the list: the CPU engine and model the service is set to, which always takes it.
+  const newEntry = () => ({ device: 'cpu', engine: config.cpu_engine, model: config.cpu_engine === 'parakeet' ? config.cpu_quality : config.cpu_model, enabled: true })
+
   // The list `device=auto` goes through from the top: each entry can be switched off, moved and changed.
   function autoList() {
     return h('div', {},
@@ -68,16 +72,21 @@ export function configView({ show, fail }) {
           modelsOf(entry.engine).map((model) => h('option', { value: model, selected: model === entry.model }, model))),
         h('span', { class: 'muted' }, entry.device === 'cuda' ? t('needsFree', { mib: needOf(entry.engine, entry.model) }) : t('cpuAlways')),
         h('button', { class: 'small', onclick: () => { draft.auto_chain.splice(index, 1); render() } }, t('remove')))),
-      h('div', { class: 'actions' }, h('button', { class: 'small', onclick: () => { draft.auto_chain.push({ device: 'cpu', engine: 'whisper', model: 'medium', enabled: true }); render() } }, t('add'))))
+      h('div', { class: 'actions' }, h('button', { class: 'small', onclick: () => { draft.auto_chain.push(newEntry()); render() } }, t('add'))))
   }
 
   const group = (title, hint, ...fields) => h('fieldset', {}, h('legend', {}, title), hint ? h('p', { class: 'muted' }, hint) : null, h('div', { class: 'fields' }, fields))
 
-  function render() {
-    if (config === null) return
+  // The form starts from what the service has, once per load: drawing it again (a moved or added entry, a
+  // switch, the language) keeps what was changed until Save or Reload.
+  function fillDraft() {
     for (const key of ['cpu_engine', 'gpu_engine', 'cpu_model', 'gpu_model', 'cpu_quality', 'gpu_quality', 'gpu_ttl_minutes', 'beam_size',
       'language', 'vad_filter', 'condition_on_previous_text', 'initial_prompt', 'num_speakers', 'headroom_mib']) draft[key] = config[key]
     draft.auto_chain = structuredClone(config.auto_chain)
+  }
+
+  function render() {
+    if (config === null) return
     replaceChildren(root,
       h('h2', {}, t('tabConfig')),
       h('p', { class: 'muted' }, t('configHint')),

@@ -5,3 +5,9 @@ import { currentLanguage } from './i18n.js'
 export function formatNumber(value) {
   return new Intl.NumberFormat(currentLanguage(), { maximumFractionDigits: 3, useGrouping: false }).format(value)
 }
+
+// Minutes and seconds past a minute, plain seconds below it.
+export function duration(seconds) {
+  if (seconds < 60) return `${seconds} s`
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} min`
+}

@@ -1,3 +1,5 @@
+import { RELEASE_REASON } from './settings.js'
+
 // The calls to the service. The token is kept in this browser (localStorage, so that closing the tab does not lose it) and sent with
 // every call; the service asks for it only where something is changed (or everywhere on a network), like the TTS-Suite.
 const TOKEN_KEY = 'stt-suite-token'
@@ -36,8 +38,6 @@ export async function json(path, { method = 'GET', body } = {}) {
   return data
 }
 
-// Who asks, in the log of the service and in what a forced release tells a running transcription.
-const RELEASE_REASON = 'STT-Suite page'
 
 export const service = {
   status: () => json('../status'),
