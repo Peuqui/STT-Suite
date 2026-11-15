@@ -160,6 +160,7 @@ Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt 
 | `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision: estimates, replaced by what a burn-in measured |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Where the measured needs are kept (volume `stt_suite_state`); delete it to return to the estimates |
 | `STT_HEADROOM_MIB` | `256` | The margin: free VRAM kept on a card beyond what a model needs; also set on the web page |
+| `STT_MEMORY_LIMIT` | `16g` | Memory the container may use, with no swap on top: the CPU model stays in RAM instead of being swapped out in pauses (which made the first dictation after a pause seconds slower). Hard limit: above it the kernel ends a process in the container, so keep it well above the peak |
 
 Available models: `tiny`, `base`, `small`, `medium`, `large-v3`.
 

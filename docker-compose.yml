@@ -9,6 +9,12 @@ services:
     # The host's network: the service sees the real address of each caller, which its access rules need (a
     # published port shows every caller as the Docker gateway). Where it listens: STT_HOST and STT_PORT below.
     network_mode: host
+    # No swap for this container: memory limit and memory+swap limit are the same. In pauses the kernel would
+    # otherwise move the idle CPU model to swap, and the next dictation waits seconds for it to come back.
+    # The limit is hard: above it the kernel ends a process inside the container, so keep it well above the
+    # peak (CPU model, GPU worker and diarization worker together).
+    mem_limit: ${STT_MEMORY_LIMIT:-16g}
+    memswap_limit: ${STT_MEMORY_LIMIT:-16g}
     deploy:
       resources:
         reservations:

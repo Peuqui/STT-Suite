@@ -159,6 +159,7 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `STT_VRAM_FILE` | `vram_mib.json` | Freier VRAM (MiB), den eine Karte braucht, bevor ein Modell darauf geladen wird, je Whisper-Größe und Parakeet-Genauigkeit: Schätzwerte, ersetzt durch das, was ein Burn-in gemessen hat |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Wo die gemessenen Werte liegen (Volume `stt_suite_state`); löschen, um zu den Schätzwerten zurückzukehren |
 | `STT_HEADROOM_MIB` | `256` | Aufschlag: freier VRAM, der auf einer Karte über den Bedarf eines Modells hinaus bleibt; auch auf der Webseite einstellbar |
+| `STT_MEMORY_LIMIT` | `16g` | Arbeitsspeicher, den der Container nutzen darf, ohne Swap obendrauf: Das CPU-Modell bleibt im RAM, statt in Pausen ausgelagert zu werden (das machte das erste Diktat nach einer Pause um Sekunden langsamer). Harte Grenze: Darüber beendet der Kernel einen Prozess im Container, also deutlich über dem Spitzenbedarf ansetzen |
 
 Verfügbare Modelle: `tiny`, `base`, `small`, `medium`, `large-v3`.
 
