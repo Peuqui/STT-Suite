@@ -39,6 +39,7 @@ from typing import Any
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from auth import TOKEN_HEADER, access_for, read_token
+from gpu_orc_client import GpuOrc, GpuOrcError
 
 app = Flask(__name__)
 
@@ -415,24 +416,24 @@ _PLACEMENT_LOCK_FILE = os.environ.get("STT_GPU_PLACEMENT_LOCK", "")
 # nvidia-smi alone. Empty = no GPU-Orc on this machine.
 _GPU_ORC_URL = os.environ.get("STT_GPU_ORC_URL", "")
 _GPU_ORC_TOKEN_FILE = os.environ.get("STT_GPU_ORC_TOKEN_FILE", "")
-_GPU_ORC_LOADING_TIMEOUT_S = 5  # it answers at once, without asking anyone
 
 
 def _loading_refusal() -> str | None:
-    """Why nothing may go on a card right now, None when it may: a big model is loading, or GPU-Orc gives
-    no usable answer (nobody can then say that the cards really are as empty as they look)."""
+    """Why nothing may go on a card right now, None when it may: a big model is loading, somebody holds the
+    cards, or GPU-Orc gives no usable answer (nobody can then say that the cards really are as empty as they look)."""
     if not _GPU_ORC_URL:
         return None
-    import urllib.request
-    request = urllib.request.Request(f"{_GPU_ORC_URL.rstrip('/')}/loading")
     try:
-        if _GPU_ORC_TOKEN_FILE:
-            request.add_header("Authorization", "Bearer " + Path(_GPU_ORC_TOKEN_FILE).read_text(encoding="utf-8").strip())
-        with urllib.request.urlopen(request, timeout=_GPU_ORC_LOADING_TIMEOUT_S) as response:
-            loading = json.load(response)["loading"]
-    except (OSError, ValueError, KeyError, TypeError) as error:
+        token = Path(_GPU_ORC_TOKEN_FILE).read_text(encoding="utf-8").strip() if _GPU_ORC_TOKEN_FILE else None
+        light = GpuOrc(_GPU_ORC_URL, token).loading()
+    except (OSError, GpuOrcError) as error:
         return f"GPU-Orc at {_GPU_ORC_URL} gave no usable answer: {error!r}"
-    return f"{', '.join(loading)} is loading" if loading else None
+    if light.loading:
+        return f"{', '.join(light.loading)} is loading"
+    if light.held:
+        return f"the cards are held: {light.held['reason']}"
+    return None
+
 # Descriptor of the lock file while this process holds the lock. A worker forked inside the lock inherits a copy,
 # and flock holds the lock while any copy is open: the worker closes its copy first (_drop_inherited_placement_lock).
 _held_placement_lock: int | None = None
