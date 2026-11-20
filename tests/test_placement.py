@@ -204,12 +204,12 @@ def test_a_loading_model_refuses_and_is_named(gpu_orc: Callable[[object], _GpuOr
 
 
 def test_held_cards_refuse_and_say_why(gpu_orc: Callable[[object], _GpuOrc]) -> None:
-    gpu_orc({"loading": [], "held": {"owner": "vllm-research", "reason": "gaming", "since": "2026-11-05T09:00:00+01:00", "state": "active", "free": None}, "hold_requested": None})
+    gpu_orc({"loading": [], "held": {"owner": "vllm-research", "reason": "gaming", "model": None, "model_server": None, "since": "2026-11-05T09:00:00+01:00", "state": "active", "free": None, "granted_by": None}, "hold_requested": None})
     assert server._loading_refusal() == "the cards are held: gaming"
 
 
 def test_a_requested_hold_does_not_refuse_a_start_yet(gpu_orc: Callable[[object], _GpuOrc]) -> None:
-    gpu_orc({"loading": [], "held": None, "hold_requested": {"owner": "vllm-research", "reason": "gaming", "since": "2026-11-05T09:00:00+01:00", "state": "requested", "free": None}})
+    gpu_orc({"loading": [], "held": None, "hold_requested": {"owner": "vllm-research", "reason": "gaming", "model": None, "model_server": None, "since": "2026-11-05T09:00:00+01:00", "state": "requested", "free": None, "granted_by": None}})
     assert server._loading_refusal() is None
 
 
