@@ -431,7 +431,7 @@ def _loading_refusal() -> str | None:
     if light.loading:
         return f"{', '.join(light.loading)} is loading"
     if light.held:
-        return f"the cards are held: {light.held['reason']}"
+        return f"the cards are held: {light.held.reason}"
     return None
 
 # Descriptor of the lock file while this process holds the lock. A worker forked inside the lock inherits a copy,

@@ -193,19 +193,24 @@ def test_without_a_gpu_orc_nothing_stops_a_start(monkeypatch: pytest.MonkeyPatch
 
 
 def test_a_green_light_lets_a_start_go_on(gpu_orc: Callable[[object], _GpuOrc]) -> None:
-    fake = gpu_orc({"loading": [], "held": None})
+    fake = gpu_orc({"loading": [], "held": None, "hold_requested": None})
     assert server._loading_refusal() is None
     assert fake.asked[0].full_url == "http://orc:5070/loading"
 
 
 def test_a_loading_model_refuses_and_is_named(gpu_orc: Callable[[object], _GpuOrc]) -> None:
-    gpu_orc({"loading": ["DeepSeek-vllm"], "held": None})
+    gpu_orc({"loading": ["DeepSeek-vllm"], "held": None, "hold_requested": None})
     assert server._loading_refusal() == "DeepSeek-vllm is loading"
 
 
 def test_held_cards_refuse_and_say_why(gpu_orc: Callable[[object], _GpuOrc]) -> None:
-    gpu_orc({"loading": [], "held": {"since": "2026-11-05T09:00:00+01:00", "reason": "gaming"}})
+    gpu_orc({"loading": [], "held": {"owner": "vllm-research", "reason": "gaming", "since": "2026-11-05T09:00:00+01:00", "state": "active", "free": None}, "hold_requested": None})
     assert server._loading_refusal() == "the cards are held: gaming"
+
+
+def test_a_requested_hold_does_not_refuse_a_start_yet(gpu_orc: Callable[[object], _GpuOrc]) -> None:
+    gpu_orc({"loading": [], "held": None, "hold_requested": {"owner": "vllm-research", "reason": "gaming", "since": "2026-11-05T09:00:00+01:00", "state": "requested", "free": None}})
+    assert server._loading_refusal() is None
 
 
 @pytest.mark.parametrize("answer", [OSError("refused"), {"other": 1}])
@@ -215,7 +220,7 @@ def test_an_unusable_answer_is_no_green_light(gpu_orc: Callable[[object], _GpuOr
 
 
 def test_the_token_goes_with_the_question(gpu_orc: Callable[[object], _GpuOrc], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    fake = gpu_orc({"loading": [], "held": None})
+    fake = gpu_orc({"loading": [], "held": None, "hold_requested": None})
     token = tmp_path / "token"
     token.write_text("secret\n")
     monkeypatch.setattr(server, "_GPU_ORC_TOKEN_FILE", str(token))
