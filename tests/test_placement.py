@@ -92,6 +92,14 @@ def test_the_card_table_is_read_per_card(monkeypatch: pytest.MonkeyPatch) -> Non
     assert server._process_vram_mib("GPU-1", None) is None
 
 
+def test_a_process_whose_memory_the_driver_does_not_know_is_still_listed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Found on Aragon (WSL, 22.11.2026): the per-process memory reads "[N/A]", and the GPU worker could not start at all.
+    table = "GPU-1, 207, [N/A]\n"
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: type("Result", (), {"stdout": table})())
+    assert server._card_processes("GPU-1") == {207: None}
+    assert server._process_vram_mib("GPU-1", 207) is None
+
+
 def test_without_a_lock_file_choosing_does_not_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "_PLACEMENT_LOCK_FILE", "")
     with server._placement_lock():

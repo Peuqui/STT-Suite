@@ -943,6 +943,10 @@ _BURN_IN_LANGUAGE = "de"
 _burn_in: dict = {"running": False, "engine": None, "model": None, "peak_mib": 0, "error": None}
 
 
+# What nvidia-smi writes in a field it cannot fill.
+_NOT_KNOWN = "[N/A]"
+
+
 def _used_per_card_mib() -> dict[int, int]:
     """Used VRAM (MiB) per card, by nvidia-smi index."""
     import subprocess
@@ -951,14 +955,16 @@ def _used_per_card_mib() -> dict[int, int]:
     return {int(index): int(used) for index, used in (line.split(",") for line in output.strip().splitlines())}
 
 
-def _card_processes(gpu_uuid: str) -> dict[int, int]:
-    """The processes on one card: PID → used VRAM (MiB). nvidia-smi names host PIDs, also inside the container,
-    so a worker is recognised by appearing there when it starts, not by its own PID."""
+def _card_processes(gpu_uuid: str) -> dict[int, int | None]:
+    """The processes on one card: PID → used VRAM (MiB), None where nvidia-smi does not know it. nvidia-smi names
+    host PIDs, also inside the container, so a worker is recognised by appearing there when it starts, not by its
+    own PID."""
     import subprocess
     output = subprocess.run(["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,used_memory", "--format=csv,noheader,nounits"],
                             capture_output=True, text=True, timeout=5, check=True).stdout
     rows = ([field.strip() for field in line.split(",")] for line in output.strip().splitlines())
-    return {int(pid): int(used) for uuid, pid, used in rows if uuid == gpu_uuid}
+    # Under WSL the driver lists the processes but never their memory: it reads "[N/A]" there.
+    return {int(pid): None if used == _NOT_KNOWN else int(used) for uuid, pid, used in rows if uuid == gpu_uuid}
 
 
 def _new_process(gpu_uuid: str, pids_before: set[int], label: str) -> int | None:
