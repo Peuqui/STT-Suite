@@ -96,7 +96,7 @@ export function testView({ show, fail }) {
       withSpeakers ? [h('h3', {}, t('speakersText')), h('div', { class: 'transcript' }, withSpeakers)] : null,
       fallback ? [h('h3', {}, t('fallbackUsed')), h('ul', {}, fallback.map((entry) => h('li', {}, `${entry.tried}: ${entry.reason}`)))] : null,
       h('h3', {}, t('result')),
-      h('div', { class: 'fields' }, h('label', {}, t('field_host')), h('code', {}, host ?? t('thisMachine')), Object.entries(rest).flatMap(([key, value]) => [h('label', {}, fieldLabel(key)), h('code', {}, typeof value === 'object' ? JSON.stringify(value) : typeof value === 'number' ? formatNumber(value) : String(value))])))
+      h('div', { class: 'fields' }, h('label', {}, t('field_host')), h('code', {}, host), Object.entries(rest).flatMap(([key, value]) => [h('label', {}, fieldLabel(key)), h('code', {}, typeof value === 'object' ? JSON.stringify(value) : typeof value === 'number' ? formatNumber(value) : String(value))])))
   }
 
   function render() {

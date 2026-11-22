@@ -80,7 +80,7 @@ Anfrage kommt. Die Modelle liegen im Docker-Volume `stt_suite_models` und übers
 | Methode | Pfad | Zweck |
 |---|---|---|
 | POST | `/transcribe` | Audiodatei transkribieren (Multipart-Formular, siehe unten) |
-| GET | `/health` | Bereitschaft: `status`, `model_loaded`, geladene Modelle je Gerät |
+| GET | `/health` | Bereitschaft: `machine` (der Name dieses Rechners, der Hostname; auch in `/status`), `status`, `model_loaded`, geladene Modelle je Gerät |
 | GET | `/status` | Ausführlicher Status und die vollständige Laufzeit-Konfiguration |
 | GET/POST | `/config` | Laufzeit-Konfiguration lesen oder ändern (JSON) |
 | GET | `/hosts` | Die Rechner aus `hosts` und ob ihre Suite antwortet, parallel gefragt (Grenze `host_probe_timeout_ms`): `{"hosts": [{"name", "url", "reachable", "error", "health"}]}`, `health` ist das `GET /health` der Gegenseite, `error` der Grund, wenn sie nicht antwortet |
@@ -107,7 +107,7 @@ Anfrage kommt. Die Modelle liegen im Docker-Volume `stt_suite_models` und übers
 | `quality` | nur Parakeet: `fp32` oder `int8`; Standard `cpu_quality` bzw. `gpu_quality`, je nach Gerät |
 
 Die Antwort ist JSON mit `text`, der benötigten Zeit, dem verwendeten Gerät und der Engine mit ihrem Modell (`model` bei
-Whisper, `quality` bei Parakeet) und `host`, dem Rechner, der transkribiert hat (`null` = dieser); nach einem Rückfall auch
+Whisper, `quality` bei Parakeet) und `host`, dem Rechner, der transkribiert hat (immer ein Name: für diesen Rechner der Hostname, `machine` in `/health`, sonst der Name aus `hosts`); nach einem Rückfall auch
 `fallback`, die Liste dessen, was die Anfrage nicht übernehmen konnte, je mit `tried` (bei einem anderen Rechner mit dessen Namen
 vorn) und `reason`. Fehler: `400` bei fehlender Datei oder ungültigem Wert, `503`, wenn kein Kandidat die Anfrage übernehmen kann
 (die GPU hat keinen Platz oder ist mit einem anderen beschäftigt, ein anderer Rechner ist aus oder lehnt ab; `detail` nennt alle

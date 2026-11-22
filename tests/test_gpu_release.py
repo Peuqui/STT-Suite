@@ -182,7 +182,7 @@ def test_after_a_withdrawal_auto_skips_the_other_gpu_entries(monkeypatch: pytest
         return {"text": "ok"}
 
     monkeypatch.setattr(server, "_run_candidate", run)
-    result, skipped = server._run_plan(plan, _JOB)
+    result, skipped, _ = server._run_plan(plan, _JOB)
     assert tried == ["cuda parakeet fp32", "cpu parakeet fp32"]
     assert result == {"text": "ok"}
     assert [entry["tried"] for entry in skipped] == ["cuda parakeet fp32", "cuda whisper medium"]

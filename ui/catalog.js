@@ -130,11 +130,11 @@ export function catalogView({ show, fail }) {
     const isLocal = source.name === null
     const answers = isLocal || source.reachable
     return h('div', {},
-      h('h3', {}, isLocal ? t('thisMachineTitle') : source.name),
+      h('h3', {}, isLocal ? status.machine : source.name),
       isLocal ? h('div', { class: 'row' },
         h('button', { onclick: () => release(() => releaseGpu(), unloadCpu), disabled: releasing }, t('releaseAll')),
         offerForce ? h('button', { class: 'primary', onclick: () => release(() => releaseGpu(true)), disabled: releasing }, t('force')) : null,
-        h('span', { class: 'muted' }, t('releaseAllHint'))) : null,
+        h('span', { class: 'muted' }, t('releaseAllHint', { machine: status.machine }))) : null,
       isLocal ? null : h('p', { class: `status ${source.reachable ? 'loaded' : 'busy'}` },
         `${source.reachable ? t('reachable') : `${t('unreachable')}: ${source.error}`} · ${source.url}`),
       answers && source.tableError ? h('p', { class: 'status busy' }, source.tableError) : null,

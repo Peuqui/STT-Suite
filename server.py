@@ -15,9 +15,9 @@ machine or on another one (config `hosts`) where the same suite runs; an entry t
 
 Endpoints:
     GET  /          — Web-UI (status, model management, settings)
-    GET  /health    — Health check (model status, device info)
+    GET  /health    — Health check (model status, device info; `machine` names this machine)
     POST /transcribe — Transcribe audio file (multipart/form-data); the answer names the `host` that did
-                       (null = this machine)
+                       (always a name: this machine's own, `machine` in /health, or the other's)
     GET  /status    — Detailed status (model info, memory usage)
     GET  /hosts     — The other machines of the auto list and what their suite reports
     GET  /hosts/<name>/engines, GET|POST /hosts/<name>/burn-in — that machine's model table and burn-in,
@@ -38,6 +38,7 @@ import json
 import multiprocessing
 import os
 import queue
+import socket
 import tempfile
 import threading
 import time
@@ -62,6 +63,10 @@ from remote import probe as probe_host
 from remote import transcribe as transcribe_on_host
 
 app = Flask(__name__)
+
+# What this machine is called, in /health, /status and the `host` of every answer: the container shares the
+# machine's network, so this is the machine's name, and the other suites and programs read the same one.
+MACHINE = socket.gethostname()
 
 
 def _error(status: int, code: str, detail: str) -> tuple:
@@ -1490,6 +1495,7 @@ def health():
         status, model_loaded = "idle", False
 
     return jsonify({
+        "machine": MACHINE,
         "status": status,
         "model_loaded": model_loaded,
         "cpu_loaded": loaded["cpu"] is not None,
@@ -1599,7 +1605,6 @@ def _run_on_host(candidate: dict, job: Job) -> dict:
     started = time.time()
     result = transcribe_on_host(host, job.upload_path, _remote_fields(candidate, job), _config["host_timeout_s"])
     print(f"[STT] {host.name} transcribed in {time.time() - started:.2f}s", flush=True)
-    result["host"] = host.name
     return result
 
 
@@ -1617,7 +1622,6 @@ def _run_candidate(candidate: dict, job: Job) -> dict:
         result = _transcribe_cpu(job.work_path, job.language, job.diarize_queued, model)
     if "error" not in result:
         # The answer names what really transcribed.
-        result["host"] = None
         result["device"] = candidate["device"]
         result["engine"] = engine
         if engine == "parakeet":
@@ -1627,9 +1631,10 @@ def _run_candidate(candidate: dict, job: Job) -> dict:
     return result
 
 
-def _run_plan(plan: list[dict], job: Job) -> tuple[dict, list[dict]]:
-    """Walk the plan until one candidate transcribes. Returns its result and the entries that
-    could not take it (with the reason), so an answer after a fallback says what happened.
+def _run_plan(plan: list[dict], job: Job) -> tuple[dict, list[dict], dict]:
+    """Walk the plan until one candidate transcribes. Returns its result, the entries that
+    could not take it (with the reason), so an answer after a fallback says what happened, and the
+    candidate that did it (its `host` tells this machine from another one).
     Raises :class:`CandidateUnavailable` when no candidate could (a single candidate, or a list
     that does not end with the CPU)."""
     skipped: list[dict] = []
@@ -1637,7 +1642,7 @@ def _run_plan(plan: list[dict], job: Job) -> tuple[dict, list[dict]]:
     while remaining:
         candidate = remaining.pop(0)
         try:
-            return _run_candidate(candidate, job), skipped
+            return _run_candidate(candidate, job), skipped, candidate
         except CandidateUnavailable as unavailable:
             skipped.append({"tried": _label(candidate), "reason": str(unavailable)})
             if isinstance(unavailable, GpuWithdrawn):
@@ -1722,7 +1727,7 @@ def transcribe():
                       device ON THIS MACHINE, or a 503 when the GPU has no room for it. "auto":
                       the entries of the auto list from the top, on this machine or another
                       one running this suite; the answer lists what could not take it
-                      (`fallback`) and names the machine that did (`host`, null = this one).
+                      (`fallback`) and names the machine that did (`host`, always a name: this machine's own or the other's).
         language:     Language code, e.g. "de", "en" (default: from config)
         diarize:      "1" to label speakers (default: off — pointless for
                       short voice commands, only worth it for interviews)
@@ -1785,7 +1790,7 @@ def transcribe():
         # runs on its own card while that one transcribes, and not at all when another machine does it).
         job = Job(upload_path=tmp_path, work_path=work_path, language=language, diarize=diarize, num_speakers=num_speakers)
         try:
-            result, skipped = _run_plan(plan, job)
+            result, skipped, done_by = _run_plan(plan, job)
         except CandidateUnavailable as unavailable:
             # 503 (not 500): tells the client "nothing can take this now" — distinct from real errors.
             # Which device to use instead is the client's choice (or `device=auto`).
@@ -1795,7 +1800,8 @@ def transcribe():
         if "error" in result:
             return _error(500, "transcription_failed", result["error"])
 
-        if result["host"]:
+        result["host"] = done_by["host"] or MACHINE
+        if done_by["host"]:
             # The other machine's answer carries its own speaker labels; the local diarization, started
             # before the plan came to it, is of no use.
             if job.diarize_queued:
@@ -1831,6 +1837,7 @@ def status():
     diarize_alive = _diarize_process is not None and _diarize_process.is_alive()
     result = {
         **_config,
+        "machine": MACHINE,
         # What is in memory now (a configured model can differ: it loads on the next request).
         "cpu_loaded": loaded["cpu"] is not None,
         "cpu_loaded_engine": loaded["cpu"]["engine"] if loaded["cpu"] else None,

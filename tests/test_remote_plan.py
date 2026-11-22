@@ -32,6 +32,7 @@ class Calls:
 def calls(monkeypatch: pytest.MonkeyPatch) -> Calls:
     seen = Calls()
     monkeypatch.setattr(server, "_config", copy.deepcopy(server._config))
+    monkeypatch.setattr(server, "MACHINE", "Mini")
     server._config["hosts"] = copy.deepcopy(HOSTS)
     monkeypatch.setattr(server, "_decode_to_wav16k", lambda path: path + ".16k.wav")
     monkeypatch.setattr(server, "_burn_in", {"running": False})
@@ -119,7 +120,7 @@ def test_the_fields_and_the_original_recording_go_to_the_host(client: Any, calls
 def test_a_local_answer_names_no_host(client: Any, calls: Calls) -> None:
     answer = post(client, [entry(None, "cpu")])
     assert answer.status_code == 200
-    assert answer.json["host"] is None
+    assert answer.json["host"] == "Mini"  # always a name, this machine's own
     assert answer.json["device"] == "cpu"
 
 
@@ -132,7 +133,7 @@ def test_a_host_that_cannot_hands_the_recording_to_the_next_entry(client: Any, c
     host_answers(answer=failure)
     answer = post(client, [entry("Aragon", "cuda"), entry(None, "cpu")])
     assert answer.status_code == 200
-    assert answer.json["host"] is None
+    assert answer.json["host"] == "Mini"
     assert calls.local == ["cpu"]
     assert answer.json["fallback"] == [{"tried": "Aragon cuda parakeet fp32", "reason": str(failure)}]
 
@@ -187,7 +188,8 @@ def test_a_withdrawn_local_gpu_keeps_the_cuda_entries_of_a_host(monkeypatch: pyt
 
     monkeypatch.setattr(server, "_run_candidate", run)
     job = server.Job("a.wav", "a.wav", "de", diarize=False, num_speakers=0)
-    result, skipped = server._run_plan(plan, job)
+    result, skipped, done_by = server._run_plan(plan, job)
+    assert done_by["host"] == "Aragon"
     assert tried == ["cuda parakeet fp32", "Aragon cuda parakeet fp32"]
     assert result == {"text": "ok"}
     assert [item["tried"] for item in skipped] == ["cuda parakeet fp32", "cuda whisper medium"]
@@ -374,3 +376,24 @@ def test_hosts_state_shows_reachable_unreachable_and_refusing_machines(
 def test_without_hosts_the_state_is_empty(client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "_config", {**server._config, "hosts": []})
     assert client.get("/hosts").json == {"hosts": []}
+
+
+# ---- the machine's own name ---------------------------------------------------------------
+
+
+def test_health_and_status_name_this_machine(client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "MACHINE", "Mini")
+    assert client.get("/health").json["machine"] == "Mini"
+    assert client.get("/status").json["machine"] == "Mini"
+
+
+def test_the_machine_is_the_hostname() -> None:
+    import socket
+
+    assert socket.gethostname() == server.MACHINE
+
+
+def test_a_local_diarized_answer_names_this_machine_and_keeps_its_speakers(client: Any, calls: Calls) -> None:
+    answer = post(client, [entry(None, "cpu")], diarize="1")
+    assert answer.json["host"] == "Mini" and answer.json["text_speakers"]
+    assert calls.collected == [server._GPU_RESULT_TIMEOUT_S]

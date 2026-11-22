@@ -79,7 +79,7 @@ Models are cached in the Docker volume `stt_suite_models` and survive rebuilds. 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/transcribe` | Transcribe an audio file (multipart form, see below) |
-| GET | `/health` | Readiness: `status`, `model_loaded`, loaded models per device |
+| GET | `/health` | Readiness: `machine` (this machine's name, the hostname; also in `/status`), `status`, `model_loaded`, loaded models per device |
 | GET | `/status` | Detailed status and the full runtime configuration |
 | GET/POST | `/config` | Read or change the runtime configuration (JSON) |
 | GET | `/hosts` | The machines of `hosts` and whether their suite answers, asked in parallel (limit `host_probe_timeout_ms`): `{"hosts": [{"name", "url", "reachable", "error", "health"}]}`, `health` is the other side's `GET /health`, `error` the reason when it does not answer |
@@ -106,7 +106,7 @@ Models are cached in the Docker volume `stt_suite_models` and survive rebuilds. 
 | `quality` | Parakeet only: `fp32` or `int8`; default `cpu_quality` or `gpu_quality`, by device |
 
 The answer is JSON with `text`, the time taken, the device and the engine used and its model (`model` for
-Whisper, `quality` for Parakeet) and `host`, the machine that transcribed (`null` = this one); after a fallback also
+Whisper, `quality` for Parakeet) and `host`, the machine that transcribed (always a name: the hostname, `machine` in `/health`, for this machine, else the name from `hosts`); after a fallback also
 `fallback`, the list of what could not take the request, each with `tried` (another machine's name in front) and
 `reason`. Errors: `400` for a missing file or an invalid value, `503` when no candidate can take the request (the GPU has
 no room or is busy with another model, another machine is off or refuses; `detail` names all reasons), `500` otherwise. A refusal is JSON `{"error": <code>, "detail": <text>}`,

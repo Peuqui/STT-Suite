@@ -7,11 +7,13 @@ import { t } from './i18n.js'
 export function configView({ show, fail }) {
   const root = h('div')
   let config = null
+  // What this machine is called: the name of the choice "no other machine" in the list.
+  let machine = ''
   let rows = []
 
   async function load() {
     try {
-      ;[config, rows] = await Promise.all([service.config(), service.engines()])
+      ;[config, rows, { machine }] = await Promise.all([service.config(), service.engines(), service.status()])
       fillDraft()
       render()
     } catch (error) { fail(error) }
@@ -64,7 +66,7 @@ export function configView({ show, fail }) {
   function hostSelect(entry) {
     const missing = entry.host !== null && !hostNames().includes(entry.host)
     return h('select', { onchange: (event) => { entry.host = event.target.value === '' ? null : event.target.value; render() } },
-      h('option', { value: '', selected: entry.host === null }, t('thisMachine')),
+      h('option', { value: '', selected: entry.host === null }, machine),
       hostNames().map((name) => h('option', { value: name, selected: name === entry.host }, name)),
       missing ? h('option', { value: entry.host, selected: true }, `⚠ ${entry.host}`) : null)
   }
