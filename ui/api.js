@@ -39,15 +39,18 @@ export async function json(path, { method = 'GET', body } = {}) {
 }
 
 
+const base = (host) => (host == null ? '..' : `../hosts/${encodeURIComponent(host)}`)
+
 export const service = {
   status: () => json('../status'),
-  engines: () => json('../engines'),
+  // `host`: the name of another machine, whose suite answers through this one; null = this machine.
+  engines: (host) => json(`${base(host)}/engines`),
   hosts: () => json('../hosts'),
   config: () => json('../config'),
   saveConfig: (config) => json('../config', { method: 'POST', body: config }),
   unloadCpu: () => json('../unload', { method: 'POST' }),
   releaseGpu: (force) => json('../gpu/release', { method: 'POST', body: { items: 'all', force, reason: RELEASE_REASON } }),
-  burnIn: () => json('../burn-in'),
-  startBurnIn: (engine, model) => json('../burn-in', { method: 'POST', body: { engine, model } }),
+  burnIn: (host) => json(`${base(host)}/burn-in`),
+  startBurnIn: (host, engine, model) => json(`${base(host)}/burn-in`, { method: 'POST', body: { engine, model } }),
   transcribe: (form) => json('../transcribe', { method: 'POST', body: form }),
 }

@@ -17,6 +17,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 from auth import TOKEN_HEADER, read_token
@@ -31,7 +32,14 @@ class CandidateUnavailable(Exception):
 
 
 class RemoteUnavailable(CandidateUnavailable):
-    """The other machine cannot transcribe now; the message says why."""
+    """The other machine cannot do this now; the message says why. When it answered with a refusal, `status`
+    and `body` (its JSON, the `error` and `detail` of server._error) are what it sent, so a caller can pass
+    them on."""
+
+    def __init__(self, message: str, status: int | None = None, body: dict | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body
 
 
 class HostUnreachable(RemoteUnavailable):
@@ -57,33 +65,63 @@ def _token(host: Host) -> str:
     return token
 
 
-def _refusal_reason(host: Host, error: urllib.error.HTTPError) -> str:
+def _refusal(host: Host, error: urllib.error.HTTPError) -> RemoteUnavailable:
     """Status and, when the other suite sent one, its `detail` (its answers are shaped like server._error)."""
-    reason = f"{host.name} answered {error.code}"
     try:
-        detail = json.loads(error.read().decode("utf-8", errors="replace")).get("detail")
-    except (ValueError, AttributeError):
-        detail = None
-    return f"{reason}: {detail}" if detail else reason
+        body = json.loads(error.read().decode("utf-8", errors="replace"))
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        body = None
+    detail = body.get("detail") if body else None
+    reason = f"{host.name} answered {error.code}"
+    return RemoteUnavailable(f"{reason}: {detail}" if detail else reason, status=error.code, body=body)
+
+
+def _exchange(host: Host, request: urllib.request.Request, timeout_s: float,
+              unreachable: type[RemoteUnavailable]) -> tuple[int, Any]:
+    """The one place a request goes out and what can go wrong with it becomes a :class:`RemoteUnavailable`:
+    a refusal (with status and body), no connection (`unreachable`, so a caller can tell a machine that is off
+    from one that is slow), an answer that is no JSON."""
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as error:
+        raise _refusal(host, error) from error
+    except (OSError, http.client.HTTPException) as error:
+        raise unreachable(f"{host.name} unreachable: {error}") from error
+    except ValueError as error:
+        raise RemoteUnavailable(f"{host.name} sent no valid JSON: {error}") from error
+
+
+def _object(host: Host, answer: Any) -> dict:
+    if not isinstance(answer, dict):
+        raise RemoteUnavailable(f"{host.name} sent no JSON object")
+    return answer
+
+
+def _headers(host: Host, content_type: str | None = None) -> dict[str, str]:
+    headers = {TOKEN_HEADER: _token(host), "User-Agent": USER_AGENT}
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def request_json(host: Host, method: str, path: str, timeout_s: float, body: dict | None = None) -> tuple[int, Any]:
+    """A JSON request to the other suite (GET, or POST with a JSON body): the status of its answer and its JSON,
+    whatever shape that has. :class:`RemoteUnavailable` for a refusal (`status`, `body`), :class:`HostUnreachable` when
+    nothing answers."""
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(host.endpoint(path), data=data, method=method,
+                                     headers=_headers(host, "application/json" if data else None))
+    return _exchange(host, request, timeout_s, HostUnreachable)
 
 
 def health(host: Host, timeout_s: float) -> dict:
     """The ``GET /health`` answer of the machine's suite; :class:`RemoteUnavailable` unless it comes within
     `timeout_s`. A machine that is off answers nothing at all; the short limit decides that fast instead of
     waiting out the connection attempt."""
-    request = urllib.request.Request(host.endpoint("/health"), headers={TOKEN_HEADER: _token(host), "User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
-            answer = json.load(response)
-    except urllib.error.HTTPError as error:
-        raise RemoteUnavailable(_refusal_reason(host, error)) from error
-    except (OSError, http.client.HTTPException) as error:
-        raise HostUnreachable(f"{host.name} unreachable: {error}") from error
-    except ValueError as error:
-        raise RemoteUnavailable(f"{host.name} sent no valid JSON: {error}") from error
-    if not isinstance(answer, dict):
-        raise RemoteUnavailable(f"{host.name} sent no JSON object")
-    return answer
+    return _object(host, request_json(host, "GET", "/health", timeout_s)[1])
 
 
 def probe(host: Host, timeout_s: float) -> None:
@@ -113,18 +151,8 @@ def transcribe(host: Host, file_path: str, fields: dict[str, str], timeout_s: fl
     request = urllib.request.Request(
         host.endpoint("/transcribe"),
         data=_multipart(boundary, fields, path.name, path.read_bytes()),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
-                 TOKEN_HEADER: _token(host), "User-Agent": USER_AGENT},
+        headers=_headers(host, f"multipart/form-data; boundary={boundary}"),
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
-            answer = json.load(response)
-    except urllib.error.HTTPError as error:
-        raise RemoteUnavailable(_refusal_reason(host, error)) from error
-    except (OSError, http.client.HTTPException) as error:
-        raise RemoteUnavailable(f"{host.name} unreachable: {error}") from error
-    except ValueError as error:
-        raise RemoteUnavailable(f"{host.name} sent no valid JSON: {error}") from error
-    if not isinstance(answer, dict):
-        raise RemoteUnavailable(f"{host.name} sent no JSON object")
-    return answer
+    # Plain RemoteUnavailable also when nothing answers: it was asked a moment ago (the probe), so a slow or
+    # dropped transcription is not a machine that is off, and its other entries stay.
+    return _object(host, _exchange(host, request, timeout_s, RemoteUnavailable)[1])

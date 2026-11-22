@@ -98,7 +98,7 @@ export function configView({ show, fail }) {
           config.engines.map((engine) => h('option', { value: engine, selected: engine === entry.engine }, engine))),
         h('select', { onchange: (event) => { entry.model = event.target.value; render() } },
           modelsOf(entry.engine).map((model) => h('option', { value: model, selected: model === entry.model }, model))),
-        h('span', { class: 'muted' }, entry.host !== null ? t('hostDecides') : entry.device === 'cuda' ? t('needsFree', { mib: needOf(entry.engine, entry.model) }) : t('cpuAlways')),
+        h('span', { class: 'muted' }, entry.host !== null ? t('hostDecides', { host: entry.host }) : entry.device === 'cuda' ? t('needsFree', { mib: needOf(entry.engine, entry.model) }) : t('cpuAlways')),
         h('button', { class: 'small', onclick: () => { draft.auto_chain.splice(index, 1); render() } }, t('remove')))),
       h('div', { class: 'actions' }, h('button', { class: 'small', onclick: () => { draft.auto_chain.push(newEntry()); render() } }, t('add'))))
   }

@@ -38,7 +38,7 @@ const TEXTS = {
     groupHostsHint: 'Andere Rechner, auf denen dieselbe STT-Suite läuft. Die Token-Datei ist der Pfad IM CONTAINER dieser Suite (zum Beispiel /stt-token/aragon.token), nicht auf deinem Rechner; sie enthält das Token der Suite dort. Die Automatik-Liste kann Einträge auf diese Rechner legen: ist einer aus oder lehnt ab, geht es mit dem nächsten Eintrag weiter.',
     hostProbe: 'Wartezeit auf einen Rechner, ob er da ist (ms)', hostTimeout: 'Wartezeit auf die Transkription eines Rechners (s)',
     hostMissing: 'Speichern geht nicht: die Automatik-Liste nutzt einen Rechner, den es oben nicht mehr gibt: {names}. Rechner wieder eintragen oder den Eintrag der Liste ändern.',
-    hostDecides: 'der Rechner prüft selbst',
+    hostDecides: 'Platz prüft {host} selbst', burnInOn: 'Auf dem Rechner {host}:', modelsOf: 'Modelle auf {host}',
     hostsStateHint: 'Die anderen Rechner und was ihre Suite meldet; wird zusammen mit dieser Seite aufgefrischt.', reachable: 'erreichbar', unreachable: 'nicht erreichbar', nothingLoadedThere: 'nichts geladen',
   },
   en: {
@@ -79,7 +79,7 @@ const TEXTS = {
     groupHostsHint: 'Other machines running the same STT-Suite. The token file is the path INSIDE THE CONTAINER of this suite (for example /stt-token/aragon.token), not on your machine; it holds the token of the suite there. The automatic list can put entries on these machines: if one is off or refuses, the next entry is tried.',
     hostProbe: 'Wait for a machine to show it is there (ms)', hostTimeout: 'Wait for a machine\'s transcription (s)',
     hostMissing: 'Saving is off: the automatic list uses a machine that is gone from the list above: {names}. Add the machine again or change the entry of the list.',
-    hostDecides: 'the machine decides itself',
+    hostDecides: '{host} checks the room itself', burnInOn: 'On the machine {host}:', modelsOf: 'Models on {host}',
     hostsStateHint: 'The other machines and what their suite reports; refreshed together with this page.', reachable: 'reachable', unreachable: 'not reachable', nothingLoadedThere: 'nothing loaded',
   },
 }

@@ -195,3 +195,110 @@ def test_the_hosts_endpoint_asks_real_machines(peer: tuple[Peer, str], tmp_path:
     state.status, state.body = 503, json.dumps({"detail": "loading"}).encode()
     refused = server.app.test_client().get("/hosts").json["hosts"][0]
     assert refused["reachable"] is False and refused["error"] == "On answered 503: loading"
+
+
+# ---- the JSON request and the endpoints that pass it on ------------------------------------
+
+
+def test_request_json_gets_any_shape_with_the_token(peer: tuple[Peer, str], tmp_path: Path) -> None:
+    state, url = peer
+    state.body = json.dumps([{"engine": "whisper", "model": "tiny"}]).encode()
+    assert remote.request_json(make_host(url, tmp_path), "GET", "/engines", 2) == (200, [{"engine": "whisper", "model": "tiny"}])
+    sent = state.requests[0]
+    assert (sent["method"], sent["path"]) == ("GET", "/engines")
+    assert sent["headers"][TOKEN_HEADER.lower()] == "secret" and sent["headers"]["user-agent"] == "STT-Suite"
+
+
+def test_request_json_posts_a_json_body(peer: tuple[Peer, str], tmp_path: Path) -> None:
+    state, url = peer
+    remote.request_json(make_host(url, tmp_path), "POST", "/burn-in", 2, {"engine": "parakeet", "model": "fp32"})
+    sent = state.requests[0]
+    assert sent["method"] == "POST" and sent["headers"]["content-type"] == "application/json"
+    assert json.loads(sent["body"]) == {"engine": "parakeet", "model": "fp32"}
+
+
+def test_a_refusal_keeps_status_and_body_for_the_caller(peer: tuple[Peer, str], tmp_path: Path) -> None:
+    state, url = peer
+    refusal = {"error": "burn_in_running", "detail": "a burn-in is running, one at a time"}
+    state.status, state.body = 409, json.dumps(refusal).encode()
+    with pytest.raises(remote.RemoteUnavailable) as raised:
+        remote.request_json(make_host(url, tmp_path), "POST", "/burn-in", 2, {})
+    assert raised.value.status == 409 and raised.value.body == refusal
+    assert not isinstance(raised.value, remote.HostUnreachable)
+
+
+def test_request_json_to_nobody_is_host_unreachable(tmp_path: Path) -> None:
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        port = taken.getsockname()[1]
+    with pytest.raises(remote.HostUnreachable) as raised:
+        remote.request_json(make_host(f"http://127.0.0.1:{port}", tmp_path), "GET", "/engines", 2)
+    assert raised.value.status is None
+
+
+@pytest.fixture
+def through(peer: tuple[Peer, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Peer, Any]]:
+    import copy
+
+    import server
+
+    state, url = peer
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        closed_port = taken.getsockname()[1]
+    token_file = make_host(url, tmp_path).token_file
+    monkeypatch.setattr(server, "_config", copy.deepcopy(server._config))
+    server._config["hosts"] = [
+        {"name": "Aragon", "url": url, "token_file": token_file},
+        {"name": "Off", "url": f"http://127.0.0.1:{closed_port}", "token_file": token_file},
+    ]
+    yield state, server.app.test_client()
+
+
+def test_engines_and_burn_in_state_are_passed_through(through: tuple[Peer, Any]) -> None:
+    state, client = through
+    state.body = json.dumps([{"engine": "parakeet", "model": "fp32", "needed_mib": 3976}]).encode()
+    assert client.get("/hosts/Aragon/engines").json == [{"engine": "parakeet", "model": "fp32", "needed_mib": 3976}]
+    state.body = json.dumps({"running": False}).encode()
+    assert client.get("/hosts/Aragon/burn-in").json == {"running": False}
+    assert [(r["method"], r["path"]) for r in state.requests] == [("GET", "/engines"), ("GET", "/burn-in")]
+
+
+def test_the_burn_in_start_is_passed_on_with_its_body_and_the_token_of_the_other_side(through: tuple[Peer, Any]) -> None:
+    state, client = through
+    state.status, state.body = 202, json.dumps({"running": True}).encode()
+    answer = client.post("/hosts/Aragon/burn-in", json={"engine": "parakeet", "model": "fp32"}, headers={TOKEN_HEADER: "test-token"})
+    assert answer.status_code == 202 and answer.json == {"running": True}
+    sent = state.requests[0]
+    assert (sent["method"], sent["path"]) == ("POST", "/burn-in")
+    assert json.loads(sent["body"]) == {"engine": "parakeet", "model": "fp32"}
+    assert sent["headers"][TOKEN_HEADER.lower()] == "secret"
+
+
+def test_the_burn_in_start_needs_the_token_of_this_service_also_on_loopback(through: tuple[Peer, Any]) -> None:
+    state, client = through
+    assert client.post("/hosts/Aragon/burn-in", json={"engine": "parakeet", "model": "fp32"}).status_code == 401
+    assert state.requests == []
+
+
+def test_an_unknown_machine_is_404(through: tuple[Peer, Any]) -> None:
+    _, client = through
+    for answer in (client.get("/hosts/Mars/engines"), client.get("/hosts/Mars/burn-in")):
+        assert answer.status_code == 404 and answer.json["error"] == "unknown_host"
+    posted = client.post("/hosts/Mars/burn-in", json={}, headers={TOKEN_HEADER: "test-token"})
+    assert posted.status_code == 404 and posted.json["error"] == "unknown_host"
+
+
+def test_a_refusal_of_the_other_side_comes_back_with_its_status_and_body(through: tuple[Peer, Any]) -> None:
+    state, client = through
+    refusal = {"error": "burn_in_running", "detail": "a burn-in is running, one at a time"}
+    state.status, state.body = 409, json.dumps(refusal).encode()
+    answer = client.post("/hosts/Aragon/burn-in", json={"engine": "parakeet", "model": "fp32"}, headers={TOKEN_HEADER: "test-token"})
+    assert answer.status_code == 409 and answer.json == refusal
+
+
+def test_a_machine_that_is_off_is_502_with_the_reason(through: tuple[Peer, Any]) -> None:
+    _, client = through
+    answer = client.get("/hosts/Off/engines")
+    assert answer.status_code == 502 and answer.json["error"] == "host_unreachable"
+    assert "Off unreachable" in answer.json["detail"]

@@ -20,6 +20,8 @@ Endpoints:
                        (null = this machine)
     GET  /status    — Detailed status (model info, memory usage)
     GET  /hosts     — The other machines of the auto list and what their suite reports
+    GET  /hosts/<name>/engines, GET|POST /hosts/<name>/burn-in — that machine's model table and burn-in,
+                       passed through to its suite
     POST /unload    — Unload model(s) to free memory
     GET  /config    — Get current configuration
     POST /config    — Update configuration (JSON body)
@@ -48,7 +50,13 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from auth import TOKEN_HEADER, access_for, read_token
 from gpu_orc_client import GpuOrc, GpuOrcError
-from remote import CandidateUnavailable, Host, HostUnreachable, RemoteUnavailable
+from remote import (
+    CandidateUnavailable,
+    Host,
+    HostUnreachable,
+    RemoteUnavailable,
+    request_json,
+)
 from remote import health as host_health
 from remote import probe as probe_host
 from remote import transcribe as transcribe_on_host
@@ -1419,7 +1427,8 @@ LISTEN_HOST = os.environ["STT_HOST"]
 _TOKEN_FILE = os.environ.get("STT_TOKEN_FILE", "")
 _access = access_for(LISTEN_HOST, read_token(Path(_TOKEN_FILE)) if _TOKEN_FILE else None)
 # The commands that change something: they need the token also on this machine.
-_CHANGING = {("POST", "/config"), ("POST", "/burn-in")}
+# By route, so that a name in the path (<name>) does not make a command of its own.
+_CHANGING = {("POST", "/config"), ("POST", "/burn-in"), ("POST", "/hosts/<name>/burn-in")}
 
 
 def _open_to_all(path: str) -> bool:
@@ -1431,7 +1440,8 @@ def _open_to_all(path: str) -> bool:
 def _check_access():
     if _open_to_all(request.path):
         return None
-    changes_something = (request.method, request.path) in _CHANGING
+    route = request.url_rule.rule if request.url_rule else request.path
+    changes_something = (request.method, route) in _CHANGING
     refusal = _access.refusal(request.headers.get(TOKEN_HEADER, ""), changes_something, request.remote_addr)
     if refusal is None:
         return None
@@ -1666,6 +1676,40 @@ def hosts_state():
         return jsonify({"hosts": []})
     with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
         return jsonify({"hosts": list(pool.map(_host_state, hosts))})
+
+
+def _through_host(name: str, method: str, path: str, body: dict | None = None):
+    """What the suite of the machine `name` answers to this request, with its status and body: the page
+    shows a refusal (a burn-in already running, the GPU busy) as it does for this machine's own."""
+    if name not in [host["name"] for host in _config["hosts"]]:
+        return _error(404, "unknown_host", f"No machine named {name!r} in hosts")
+    try:
+        status, answer = request_json(_host_named(name), method, path, _config["host_probe_timeout_ms"] / 1000, body)
+        return jsonify(answer), status
+    except HostUnreachable as unreachable:
+        return _error(502, "host_unreachable", str(unreachable))
+    except RemoteUnavailable as refused:
+        if refused.body is not None and refused.status is not None:
+            return jsonify(refused.body), refused.status
+        return _error(refused.status or 502, "host_unreachable", str(refused))
+
+
+@app.route("/hosts/<name>/engines", methods=["GET"])
+def host_engines(name: str):
+    return _through_host(name, "GET", "/engines")
+
+
+@app.route("/hosts/<name>/burn-in", methods=["GET"])
+def host_burn_in_status(name: str):
+    return _through_host(name, "GET", "/burn-in")
+
+
+@app.route("/hosts/<name>/burn-in", methods=["POST"])
+def host_burn_in_start(name: str):
+    """Start the burn-in on that machine's suite: one per machine is enough, what a model takes is the same on
+    each of its cards."""
+    body = request.get_json(silent=True)
+    return _through_host(name, "POST", "/burn-in", body if isinstance(body, dict) else {})
 
 
 @app.route("/transcribe", methods=["POST"])

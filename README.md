@@ -83,6 +83,8 @@ Models are cached in the Docker volume `stt_suite_models` and survive rebuilds. 
 | GET | `/status` | Detailed status and the full runtime configuration |
 | GET/POST | `/config` | Read or change the runtime configuration (JSON) |
 | GET | `/hosts` | The machines of `hosts` and whether their suite answers, asked in parallel (limit `host_probe_timeout_ms`): `{"hosts": [{"name", "url", "reachable", "error", "health"}]}`, `health` is the other side's `GET /health`, `error` the reason when it does not answer |
+| GET | `/hosts/<name>/engines`, `/hosts/<name>/burn-in` | The other suite's `GET /engines` and `GET /burn-in` for the machine `<name>` (from `hosts`), passed through; the wait is `host_probe_timeout_ms`. Unknown name: `404` `unknown_host`; machine not reachable: `502` `host_unreachable` with the reason |
+| POST | `/hosts/<name>/burn-in` | Starts the burn-in on that machine's suite (JSON `{"engine", "model"}`). It changes something, so it needs this service's token also on loopback. A refusal of the other side (`409` `burn_in_running`, `409` `gpu_busy`, `400` …) comes back with its status and body |
 | GET | `/engines` | Every model of every engine: `engine`, `model`, `loaded_on` (devices), `needed_mib` (what a card must have free: need plus margin), `measured` (by a burn-in, else an estimate). Like the TTS-Suite's catalog |
 | POST | `/unload` | Unload the CPU models (the GPU workers: `/gpu/release`) |
 | GET | `/gpu/holders` | The GPU workers that run: `item`, `gpu_uuids` (the card it was started on), `memory_mib` (what the GPU worker took when loading), `busy` |
@@ -230,7 +232,7 @@ entries are passed over too (one that answers but refuses, such as a `503` for a
 always mean this machine. On the web page: tab Configuration, section "Machines" (name, address, token file as a path inside
 the container, the two waits) and in the automatic list a choice of machine per entry; an entry using a machine missing above is
 marked and Save is greyed out. Tab Engines: per machine reachable or not (with the reason) and what is loaded there
-(`GET /hosts`, refreshed with the rest). Tab Test: the answer names the machine and lists the fallback. Background and plan, in German: [docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md).
+(`GET /hosts`, refreshed with the rest), below it for each reachable machine its model table with burn-in button and progress (the measurement runs on that machine; there is no Release there, that is that machine's GPU-Orc's business). One burn-in per machine is enough, not one per card: Parakeet fp32 measured 3720 MiB on the 3090 Ti and 3714 MiB on the Mini. Tab Test: the answer names the machine and lists the fallback. Background and plan, in German: [docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md).
 
 ## Star History
 

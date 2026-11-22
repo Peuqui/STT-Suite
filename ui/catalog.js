@@ -8,46 +8,59 @@ import { BURN_IN_POLL_MS, REFRESH_MS } from './settings.js'
 // for each row, and a burn-in that measures what it takes and makes that its budget.
 export function catalogView({ show, fail }) {
   const root = h('div')
-  let rows = []
   let status = null
+  // The table and the burn-in of each machine, drawn and driven by the same code: this one (name null) and
+  // the others, as the service reports them (`hosts`, each with its own rows and burnIn).
+  const local = { name: null, rows: [], burnIn: { running: false } }
   let hosts = []
-  let burnIn = { running: false }
+  const sourceOf = (name) => (name === null ? local : hosts.find((host) => host.name === name))
   // A release the GPU refused because it is transcribing: offered once more with force.
   let offerForce = false
   // A release under way: its buttons stay off and the rows it touches say so, so it is not pressed twice.
   let releasing = false
 
+  async function loadTable(source) {
+    ;[source.rows, source.burnIn] = await Promise.all([service.engines(source.name), service.burnIn(source.name)])
+  }
+
   async function load() {
     try {
-      ;[rows, status, burnIn, { hosts }] = await Promise.all([service.engines(), service.status(), service.burnIn(), service.hosts()])
+      ;[status, { hosts }] = await Promise.all([service.status(), service.hosts()])
+      // A machine whose table cannot be read says so in its place; the others and this one are drawn anyway.
+      await Promise.all([loadTable(local), ...hosts.filter((host) => host.reachable).map((host) =>
+        loadTable(host).catch((error) => { host.tableError = error.message }))])
       render()
-      if (burnIn.running) followBurnIn()
+      for (const source of [local, ...hosts]) if (source.burnIn?.running) followBurnIn(source.name)
     } catch (error) { fail(error) }
   }
 
   // Asks until the burn-in has ended, also after a reload of the page; then the new value is in the catalog.
-  let following = false
-  async function followBurnIn() {
-    if (following) return
-    following = true
+  const following = new Set()
+  async function followBurnIn(name) {
+    if (following.has(name)) return
+    following.add(name)
     try {
-      while (burnIn.running) {
+      let state = sourceOf(name).burnIn
+      while (state.running) {
         await new Promise((resolve) => setTimeout(resolve, BURN_IN_POLL_MS))
-        burnIn = await service.burnIn()
+        state = await service.burnIn(name)
+        const source = sourceOf(name)
+        if (source) source.burnIn = state
         render()
       }
-      if (burnIn.error) fail(new Error(burnIn.error))
-      else show(t('burnInDone', { engine: burnIn.engine, model: burnIn.model, peak: formatNumber(burnIn.peak_mib) }))
+      if (state.error) fail(new Error(state.error))
+      else show(t('burnInDone', { engine: state.engine, model: state.model, peak: formatNumber(state.peak_mib) }))
       await load()
-    } catch (error) { fail(error) } finally { following = false }
+    } catch (error) { fail(error) } finally { following.delete(name) }
   }
 
-  async function startBurnIn(row) {
-    if (!window.confirm(t('burnInConfirm', { engine: row.engine, model: row.model }))) return
+  async function startBurnIn(source, row) {
+    const on = source.name === null ? '' : `${t('burnInOn', { host: source.name })} `
+    if (!window.confirm(on + t('burnInConfirm', { engine: row.engine, model: row.model }))) return
     try {
-      burnIn = await service.startBurnIn(row.engine, row.model)
+      source.burnIn = await service.startBurnIn(source.name, row.engine, row.model)
       render()
-      followBurnIn()
+      followBurnIn(source.name)
     } catch (error) { fail(error) }
   }
 
@@ -101,10 +114,9 @@ export function catalogView({ show, fail }) {
 
   function render() {
     if (status === null) return
-    const measured = (row) => h('span', { class: row.measured ? 'status loaded' : 'muted' }, t(row.measured ? 'measured' : 'estimate'))
     const buttons = (row) => h('div', { class: 'buttons' },
       h('button', { class: 'small', onclick: () => release(...stepsFor(row)), disabled: releasing || row.loaded_on.length === 0 }, t('release')),
-      h('button', { class: 'small', onclick: () => startBurnIn(row), disabled: burnIn.running || status.gpu_busy }, t('burnIn')))
+      burnInButton(local, row, status.gpu_busy))
     replaceChildren(root,
       h('h2', {}, t('tabCatalog')),
       h('p', { class: 'muted' }, t('catalogHint')),
@@ -112,12 +124,18 @@ export function catalogView({ show, fail }) {
         h('button', { onclick: load }, t('reload')),
         h('button', { onclick: () => release(() => releaseGpu(), unloadCpu), disabled: releasing }, t('releaseAll')),
         offerForce ? h('button', { class: 'primary', onclick: () => release(() => releaseGpu(true)), disabled: releasing }, t('force')) : null),
-      burnIn.running ? h('p', { class: 'status busy' }, burnInText()) : null,
+      burnInLine(local),
       cardTable([t('engine'), t('model'), t('state'), t('memoryNeeded'), t('source'), ''],
-        rows.map((row) => [row.engine, row.model, stateOf(row), formatNumber(row.needed_mib), measured(row), buttons(row)])),
+        local.rows.map((row) => [row.engine, row.model, stateOf(row), formatNumber(row.needed_mib), measured(row), buttons(row)])),
       hostsView(),
     )
   }
+
+  const measured = (row) => h('span', { class: row.measured ? 'status loaded' : 'muted' }, t(row.measured ? 'measured' : 'estimate'))
+  const burnInButton = (source, row, otherBusy = false) =>
+    h('button', { class: 'small', onclick: () => startBurnIn(source, row), disabled: source.burnIn.running || otherBusy }, t('burnIn'))
+  // Why a burn-in button is off is written out: a running one shows its progress here.
+  const burnInLine = (source) => (source.burnIn.running ? h('p', { class: 'status busy' }, burnInText(source)) : null)
 
   // What a loaded model of another machine's suite is: "parakeet-fp32" or the Whisper size, or that nothing is.
   const loadedOn = (health, device) => (health[`${device}_loaded`] ? `${health[`${device}_engine`]} ${health[`${device}_model`]}` : t('nothingLoadedThere'))
@@ -132,12 +150,24 @@ export function catalogView({ show, fail }) {
       cardTable([t('hostName'), t('hostUrl'), t('state'), t('cpu'), t('gpu')],
         hosts.map((host) => [host.name, host.url,
           h('span', { class: `status ${host.reachable ? 'loaded' : 'busy'}` }, host.reachable ? t('reachable') : `${t('unreachable')}: ${host.error}`),
-          host.reachable ? loadedOn(host.health, 'cpu') : '', host.reachable ? loadedOn(host.health, 'gpu') : ''])))
+          host.reachable ? loadedOn(host.health, 'cpu') : '', host.reachable ? loadedOn(host.health, 'gpu') : ''])),
+      hosts.filter((host) => host.reachable).map(hostTable))
   }
 
-  function burnInText() {
-    if (burnIn.peak_mib === 0) return t('burnInStarting', { engine: burnIn.engine, model: burnIn.model })
-    return t('burnInRunning', { engine: burnIn.engine, model: burnIn.model, peak: formatNumber(burnIn.peak_mib) })
+  // A machine's model table and its burn-in: no release here, that is the GPU-Orc of that machine's business.
+  function hostTable(host) {
+    if (host.tableError) return h('p', { class: 'status busy' }, `${host.name}: ${host.tableError}`)
+    return h('div', {},
+      h('h3', {}, t('modelsOf', { host: host.name })),
+      burnInLine(host),
+      cardTable([t('engine'), t('model'), t('memoryNeeded'), t('source'), ''],
+        host.rows.map((row) => [row.engine, row.model, formatNumber(row.needed_mib), measured(row), burnInButton(host, row)])))
+  }
+
+  function burnInText({ name, burnIn }) {
+    const where = name === null ? '' : `${name}: `
+    if (burnIn.peak_mib === 0) return where + t('burnInStarting', { engine: burnIn.engine, model: burnIn.model })
+    return where + t('burnInRunning', { engine: burnIn.engine, model: burnIn.model, peak: formatNumber(burnIn.peak_mib) })
   }
 
   setInterval(() => {
