@@ -231,8 +231,7 @@ the next entry. A machine that does not answer `GET /health` at all is not asked
 entries are passed over too (one that answers but refuses, such as a `503` for a full card, keeps them). Speaker labels (`diarize=1`) are made by the machine that transcribes. `device=cuda` and `device=cpu`
 always mean this machine. On the web page: tab Configuration, section "Machines" (name, address, token file as a path inside
 the container, the two waits) and in the automatic list a choice of machine per entry; an entry using a machine missing above is
-marked and Save is greyed out. Tab Engines: per machine reachable or not (with the reason) and what is loaded there
-(`GET /hosts`, refreshed with the rest), below it for each reachable machine its model table with burn-in button and progress (the measurement runs on that machine; there is no Release there, that is that machine's GPU-Orc's business). One burn-in per machine is enough, not one per card: Parakeet fp32 measured 3720 MiB on the 3090 Ti and 3714 MiB on the Mini. Tab Test: the answer names the machine and lists the fallback. Background and plan, in German: [docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md).
+marked and Save is greyed out. Tab Engines: one section per machine, all built alike ("This machine", then the names from `hosts`) with reachable or not (with the reason and the address; `GET /hosts`, refreshed with the rest), the progress of a burn-in and the model table (engine, model, state, need, source, buttons); the measurement runs on that machine. "Release" and "Release all" exist only in this machine's section; another machine's models are released by its GPU-Orc. One burn-in per machine is enough, not one per card: Parakeet fp32 measured 3720 MiB on the 3090 Ti and 3714 MiB on the Mini. Tab Test: the answer names the machine and lists the fallback. Background and plan, in German: [docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md).
 
 ## Star History
 
