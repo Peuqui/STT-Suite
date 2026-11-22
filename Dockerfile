@@ -58,7 +58,7 @@ RUN pip install --no-cache-dir --no-deps --force-reinstall onnxruntime-gpu==1.23
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/site-packages/nvidia/cufft/lib:/usr/local/lib/python3.12/site-packages/nvidia/curand/lib:${LD_LIBRARY_PATH}
 
 # Copy server
-COPY server.py auth.py gpu_orc_client.py gunicorn.conf.py /app/
+COPY server.py auth.py gpu_orc_client.py remote.py gunicorn.conf.py /app/
 COPY vram_mib.json /app/vram_mib.json
 COPY burn_in_speech.wav /app/burn_in_speech.wav
 COPY ui /app/ui

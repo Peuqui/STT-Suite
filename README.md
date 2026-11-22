@@ -25,7 +25,8 @@ service, errors as JSON, and a README in German and in English. (The Docker cont
 - **`device=auto` for a fallback you ask for:** it goes through a list you set (`auto_chain` in the
   configuration, on the web page under Configuration: entries of device, engine and model that can be
   moved, switched off, changed and added; at first the configured GPU model and then the configured CPU
-  model). The first entry that can takes the request. Which one can is decided from the table of VRAM needs
+  model). An entry has `host`, `device`, `engine`, `model` and `enabled`; `host` is `null` (this machine) or the name of a
+  machine in `hosts` (see below). The first entry that can takes the request. Which one can is decided from the table of VRAM needs
   and one `nvidia-smi` query, without loading anything on trial, and before a model in memory is let go: a
   model that cannot be loaded never costs the one that is. The answer names what transcribed and lists in
   `fallback` what could not and why.
@@ -81,6 +82,7 @@ Models are cached in the Docker volume `stt_suite_models` and survive rebuilds. 
 | GET | `/health` | Readiness: `status`, `model_loaded`, loaded models per device |
 | GET | `/status` | Detailed status and the full runtime configuration |
 | GET/POST | `/config` | Read or change the runtime configuration (JSON) |
+| GET | `/hosts` | The machines of `hosts` and whether their suite answers, asked in parallel (limit `host_probe_timeout_ms`): `{"hosts": [{"name", "url", "reachable", "error", "health"}]}`, `health` is the other side's `GET /health`, `error` the reason when it does not answer |
 | GET | `/engines` | Every model of every engine: `engine`, `model`, `loaded_on` (devices), `needed_mib` (what a card must have free: need plus margin), `measured` (by a burn-in, else an estimate). Like the TTS-Suite's catalog |
 | POST | `/unload` | Unload the CPU models (the GPU workers: `/gpu/release`) |
 | GET | `/gpu/holders` | The GPU workers that run: `item`, `gpu_uuids` (the card it was started on), `memory_mib` (what the GPU worker took when loading), `busy` |
@@ -102,15 +104,21 @@ Models are cached in the Docker volume `stt_suite_models` and survive rebuilds. 
 | `quality` | Parakeet only: `fp32` or `int8`; default `cpu_quality` or `gpu_quality`, by device |
 
 The answer is JSON with `text`, the time taken, the device and the engine used and its model (`model` for
-Whisper, `quality` for Parakeet); after a fallback also `fallback`, the list of what could not take the
-request, each with `tried` and `reason`. Errors: `400` for a missing file or an invalid value, `503` when
-the GPU has no room for the model (or is busy with another one), `500` otherwise. A refusal is JSON `{"error": <code>, "detail": <text>}`,
-like the TTS-Suite's; the codes are `bad_request`, `unauthorized` (`401`, see [Security](#security)), `gpu_unavailable`, `gpu_busy`,
+Whisper, `quality` for Parakeet) and `host`, the machine that transcribed (`null` = this one); after a fallback also
+`fallback`, the list of what could not take the request, each with `tried` (another machine's name in front) and
+`reason`. Errors: `400` for a missing file or an invalid value, `503` when no candidate can take the request (the GPU has
+no room or is busy with another model, another machine is off or refuses; `detail` names all reasons), `500` otherwise. A refusal is JSON `{"error": <code>, "detail": <text>}`,
+like the TTS-Suite's; the codes are `bad_request`, `unauthorized` (`401`, see [Security](#security)), `unavailable`, `gpu_busy`,
 `model_loading`, `burn_in_running`, `decode_failed` and `transcription_failed`.
 
 ```
 curl -F file=@speech.webm -F device=cuda http://localhost:5080/transcribe
 ```
+
+## Updating from before 22 November 2026
+
+Every entry of a saved `auto_chain` needs a `host` now (`null` = this machine). The service does not mend an older list: it stops
+at the start and says so; add `"host": null` to each entry in the state volume's `config.json`.
 
 ## Updating from before 5 November 2026
 
@@ -159,6 +167,8 @@ Tests: `python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt 
 | `PARAKEET_BATCH` | `1` | How many chunks Parakeet recognizes at once. At 1 a long recording needs no more VRAM than one chunk, and the burn-in (with a recording of at least `PARAKEET_CHUNK_S`) measures exactly that bound; above 1 the need grows with the length, up to that multiple |
 | `STT_VRAM_FILE` | `vram_mib.json` | Free VRAM (MiB) a card needs before a model is loaded on it, per Whisper size and Parakeet precision: estimates, replaced by what a burn-in measured |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Where the measured needs are kept (volume `stt_suite_state`); delete it to return to the estimates |
+| `STT_HOST_PROBE_TIMEOUT_MS` | `300` | First value of `host_probe_timeout_ms`: how long the suite waits for another machine's `GET /health`; a machine that is off never answers, the short limit decides that fast (at least 50) |
+| `STT_HOST_TIMEOUT_S` | as `STT_GPU_RESULT_TIMEOUT_S` | First value of `host_timeout_s`: how long another machine may take for the transcription (at least 1) |
 | `STT_HEADROOM_MIB` | `256` | The margin: free VRAM kept on a card beyond what a model needs; also set on the web page |
 | `STT_MEMORY_LIMIT` | `16g` | Memory the container may use, with no swap on top: the CPU model stays in RAM instead of being swapped out in pauses (which made the first dictation after a pause seconds slower). Hard limit: above it the kernel ends a process in the container, so keep it well above the peak |
 
@@ -207,11 +217,20 @@ STT_TOKEN_FILE=/stt-token/token
 Only with a token can the service be opened to other machines: `STT_HOST=0.0.0.0` (or one address). Without one it refuses that at
 the start. The connection itself is not encrypted; outside a trusted network put it behind a reverse proxy with HTTPS.
 
-## Outlook: another machine's GPU
+## Other machines
 
-Like the TTS-Suite, the STT-Suite is to use another machine's GPU too (Aragon, say, when a large
-model fills the main machine's graphics memory). Plan and requirements, in German:
-[docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md) (not built yet).
+The auto list can hand a recording to the same suite on another machine (Aragon, say, when a large model fills
+this machine's graphics memory). The setting `hosts` lists them: `[{"name": "Aragon", "url": "http://aragon:5080",
+"token_file": "/path/to/token"}]` (the token file holds that machine's token; see [Security](#security)). An entry of
+`auto_chain` with `"host": "Aragon"` goes there: the suite asks `GET /health` (limit `host_probe_timeout_ms`), then sends the
+recording to `POST /transcribe` with the entry's `device`, `engine` and `model`, and takes the answer over (limit
+`host_timeout_s`). If the machine is off, does not answer in time or answers with anything but `200`, the list goes on with
+the next entry. A machine that does not answer `GET /health` at all is not asked again within the same request: its other
+entries are passed over too (one that answers but refuses, such as a `503` for a full card, keeps them). Speaker labels (`diarize=1`) are made by the machine that transcribes. `device=cuda` and `device=cpu`
+always mean this machine. On the web page: tab Configuration, section "Machines" (name, address, token file as a path inside
+the container, the two waits) and in the automatic list a choice of machine per entry; an entry using a machine missing above is
+marked and Save is greyed out. Tab Engines: per machine reachable or not (with the reason) and what is loaded there
+(`GET /hosts`, refreshed with the rest). Tab Test: the answer names the machine and lists the fallback. Background and plan, in German: [docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md).
 
 ## Star History
 

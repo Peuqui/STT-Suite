@@ -55,7 +55,34 @@ export function configView({ show, fail }) {
   }
 
   // A new entry of the list: the CPU engine and model the service is set to, which always takes it.
-  const newEntry = () => ({ device: 'cpu', engine: config.cpu_engine, model: config.cpu_engine === 'parakeet' ? config.cpu_quality : config.cpu_model, enabled: true })
+  const newEntry = () => ({ host: null, device: 'cpu', engine: config.cpu_engine, model: config.cpu_engine === 'parakeet' ? config.cpu_quality : config.cpu_model, enabled: true })
+
+  // The names an entry may use: the machines of the form as it is now, so a renamed or removed one shows at once.
+  const hostNames = () => draft.hosts.map((host) => host.name)
+  const missingHosts = () => [...new Set(draft.auto_chain.map((entry) => entry.host).filter((name) => name !== null && !hostNames().includes(name)))]
+
+  function hostSelect(entry) {
+    const missing = entry.host !== null && !hostNames().includes(entry.host)
+    return h('select', { onchange: (event) => { entry.host = event.target.value === '' ? null : event.target.value; render() } },
+      h('option', { value: '', selected: entry.host === null }, t('thisMachine')),
+      hostNames().map((name) => h('option', { value: name, selected: name === entry.host }, name)),
+      missing ? h('option', { value: entry.host, selected: true }, `⚠ ${entry.host}`) : null)
+  }
+
+  // The machines whose suite takes a recording: a name, the address of its service and the token file, as the
+  // service reads it (a path in ITS container, not in the browser's machine).
+  function hostList() {
+    return h('div', {},
+      draft.hosts.map((host, index) => h('div', { class: 'row host' },
+        h('input', { type: 'text', value: host.name, placeholder: t('hostName'), onchange: (event) => { host.name = event.target.value.trim(); render() } }),
+        h('input', { type: 'text', value: host.url, placeholder: 'http://aragon:5080', onchange: (event) => (host.url = event.target.value.trim()) }),
+        h('input', { type: 'text', value: host.token_file, placeholder: '/stt-token/aragon.token', onchange: (event) => (host.token_file = event.target.value.trim()) }),
+        h('button', { class: 'small', onclick: () => { draft.hosts.splice(index, 1); render() } }, t('remove')))),
+      h('div', { class: 'actions' }, h('button', { class: 'small', onclick: () => { draft.hosts.push({ name: '', url: '', token_file: '' }); render() } }, t('add'))),
+      h('div', { class: 'fields' },
+        h('label', {}, t('hostProbe')), number('host_probe_timeout_ms'),
+        h('label', {}, t('hostTimeout')), number('host_timeout_s')))
+  }
 
   // The list `device=auto` goes through from the top: each entry can be switched off, moved and changed.
   function autoList() {
@@ -64,13 +91,14 @@ export function configView({ show, fail }) {
         h('button', { class: 'small', title: t('up'), onclick: () => moveEntry(index, -1) }, '↑'),
         h('button', { class: 'small', title: t('down'), onclick: () => moveEntry(index, 1) }, '↓'),
         h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: entry.enabled, onchange: (event) => { entry.enabled = event.target.checked; render() } }), h('span')),
+        hostSelect(entry),
         h('select', { onchange: (event) => { entry.device = event.target.value; render() } },
           ['cuda', 'cpu'].map((device) => h('option', { value: device, selected: device === entry.device }, t(device === 'cuda' ? 'gpu' : 'cpu')))),
         h('select', { onchange: (event) => { entry.engine = event.target.value; entry.model = modelsOf(entry.engine)[0]; render() } },
           config.engines.map((engine) => h('option', { value: engine, selected: engine === entry.engine }, engine))),
         h('select', { onchange: (event) => { entry.model = event.target.value; render() } },
           modelsOf(entry.engine).map((model) => h('option', { value: model, selected: model === entry.model }, model))),
-        h('span', { class: 'muted' }, entry.device === 'cuda' ? t('needsFree', { mib: needOf(entry.engine, entry.model) }) : t('cpuAlways')),
+        h('span', { class: 'muted' }, entry.host !== null ? t('hostDecides') : entry.device === 'cuda' ? t('needsFree', { mib: needOf(entry.engine, entry.model) }) : t('cpuAlways')),
         h('button', { class: 'small', onclick: () => { draft.auto_chain.splice(index, 1); render() } }, t('remove')))),
       h('div', { class: 'actions' }, h('button', { class: 'small', onclick: () => { draft.auto_chain.push(newEntry()); render() } }, t('add'))))
   }
@@ -81,8 +109,10 @@ export function configView({ show, fail }) {
   // switch, the language) keeps what was changed until Save or Reload.
   function fillDraft() {
     for (const key of ['cpu_engine', 'gpu_engine', 'cpu_model', 'gpu_model', 'cpu_quality', 'gpu_quality', 'gpu_ttl_minutes', 'beam_size',
-      'language', 'vad_filter', 'condition_on_previous_text', 'initial_prompt', 'num_speakers', 'headroom_mib']) draft[key] = config[key]
+      'language', 'vad_filter', 'condition_on_previous_text', 'initial_prompt', 'num_speakers', 'headroom_mib',
+      'host_probe_timeout_ms', 'host_timeout_s']) draft[key] = config[key]
     draft.auto_chain = structuredClone(config.auto_chain)
+    draft.hosts = structuredClone(config.hosts)
   }
 
   function render() {
@@ -103,6 +133,7 @@ export function configView({ show, fail }) {
       group('Parakeet', t('groupParakeetHint'),
         h('label', {}, t('cpuQuality')), choose('cpu_quality', config.parakeet_qualities, parakeetLabel),
         h('label', {}, t('gpuQuality')), choose('gpu_quality', config.parakeet_qualities, parakeetLabel)),
+      h('fieldset', {}, h('legend', {}, t('groupHosts')), h('p', { class: 'muted' }, t('groupHostsHint')), hostList()),
       h('fieldset', {}, h('legend', {}, t('groupAuto')), h('p', { class: 'muted' }, t('groupAutoHint')), autoList()),
       group(t('groupGeneral'), '',
         h('label', {}, t('languageField')), text('language'),
@@ -110,7 +141,8 @@ export function configView({ show, fail }) {
         h('label', {}, t('speakers')), number('num_speakers'),
         h('label', {}, t('headroom')), number('headroom_mib')),
       h('div', { class: 'actions' },
-        h('button', { class: 'primary', onclick: save }, t('save')),
+        h('button', { class: 'primary', onclick: save, disabled: missingHosts().length > 0 }, t('save')),
+        missingHosts().length > 0 ? h('span', { class: 'status busy' }, t('hostMissing', { names: missingHosts().join(', ') })) : null,
         h('button', { onclick: load }, t('reload'))),
     )
   }

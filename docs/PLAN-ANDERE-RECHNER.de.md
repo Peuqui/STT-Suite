@@ -1,6 +1,22 @@
 # Plan: die GPU eines anderen Rechners nutzen (Aragon)
 
-Stand 05.11.2026, Entwurf aus einem Gespräch mit Peuqui in Agent-Orc. Noch nichts davon ist gebaut.
+Entwurf vom 05.11.2026 aus einem Gespräch mit Peuqui in Agent-Orc; **gebaut am 22.11.2026**. Wie es jetzt
+funktioniert, steht im README (Abschnitt „Andere Rechner“). Was sich gegenüber dem Entwurf geändert hat:
+
+- Ein Eintrag mit Rechner kann **CPU oder GPU** des Rechners sein (nicht nur GPU): Aragons CPU ist frei, wenn der Mini
+  ausgelastet ist. Auf dem Mini eingestellte Reihenfolge: GPU Aragon, GPU Mini (Parakeet, dann Whisper medium), CPU Aragon,
+  CPU Mini.
+- Aragon nimmt nur, was frei ist (kein `/free` am GPU-Orc von Aragon): Ist die Karte voll, antwortet er `503`, und der
+  nächste Eintrag übernimmt.
+- Die Sprechertrennung geht mit an den Rechner, der transkribiert; lokal startet sie erst, wenn ein lokaler Eintrag drankommt.
+- Zwei Zeitgrenzen: `host_probe_timeout_ms` (300 ms) für „ist er da“, `host_timeout_s` (wie die eigene GPU) für die Arbeit.
+  Antwortet ein Rechner gar nicht, fallen in dieser Anfrage alle seine Einträge weg.
+- Adresse über das Heimnetz (`http://aragon:5080`), nicht über das Direktkabel; Windows leitet 5080 per
+  `wsl-port-manager.bat` (Regel „WSL2 STT-Suite“, nur Heimnetz) an WSL weiter.
+- Gemessen am 22.11.2026 mit 71 s Sprache, Parakeet fp32: CPU Mini unter Last 5,1–7,9 s, CPU Aragon 1,9 s, GPU Aragon
+  warm 0,72 s, über den Mini mit `device=auto` an Aragons GPU 0,93 s gesamt.
+
+Der Text darunter ist der ursprüngliche Entwurf.
 
 ## Anlass
 
@@ -80,10 +96,9 @@ einer Anfrage; nach dem Leerlauf gibt er die Karte von selbst frei.
 
 10. Agent-Orc und AIfred: nichts. Sie fragen weiter den Mini mit `device=auto`.
 
-## Offen
+## Offen (Stand 05.11.2026) und wie es entschieden wurde
 
-- Wer baut es (eine Sitzung im Ordner STT-Suite oder Agent-Orc)?
-- Soll die Antwort sagen, wo transkribiert wurde (heute `device`: `cuda`/`cpu`), etwa mit dem
-  Rechner dazu, damit Agent-Orc am Knopf „GPU Aragon“ zeigen kann?
-- Wie lange darf Aragon brauchen, bis der Mini übernimmt (Zeitgrenze für einen kalten GPU-Worker,
-  der das Modell erst laden muss)?
+- Wer baut es? Die Sitzung im Ordner STT-Suite, am 22.11.2026.
+- Sagt die Antwort, wo transkribiert wurde? Ja: `host` (`null` = dieser Rechner) neben `device`.
+- Wie lange darf Aragon brauchen? Ob er da ist, entscheidet die kurze Grenze (300 ms); für die Transkription gilt dieselbe
+  Grenze wie für die eigene GPU. Ein kalter GPU-Worker auf Aragon lädt Parakeet in etwa 1,5 s.

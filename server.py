@@ -9,11 +9,17 @@ Supports dual-device operation:
 Device is selected per request. Model and parameters are changeable at
 runtime via the Web-UI or /config endpoint.
 
+`device=auto` walks the auto list (config `auto_chain`): each entry is a device, engine and model on THIS
+machine or on another one (config `hosts`) where the same suite runs; an entry that cannot transcribe now
+(no card has room, machine off or busy) passes to the next. See remote.py.
+
 Endpoints:
     GET  /          — Web-UI (status, model management, settings)
     GET  /health    — Health check (model status, device info)
-    POST /transcribe — Transcribe audio file (multipart/form-data)
+    POST /transcribe — Transcribe audio file (multipart/form-data); the answer names the `host` that did
+                       (null = this machine)
     GET  /status    — Detailed status (model info, memory usage)
+    GET  /hosts     — The other machines of the auto list and what their suite reports
     POST /unload    — Unload model(s) to free memory
     GET  /config    — Get current configuration
     POST /config    — Update configuration (JSON body)
@@ -33,6 +39,8 @@ import queue
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +48,10 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from auth import TOKEN_HEADER, access_for, read_token
 from gpu_orc_client import GpuOrc, GpuOrcError
+from remote import CandidateUnavailable, Host, HostUnreachable, RemoteUnavailable
+from remote import health as host_health
+from remote import probe as probe_host
+from remote import transcribe as transcribe_on_host
 
 app = Flask(__name__)
 
@@ -55,6 +67,11 @@ AVAILABLE_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 # (onnx-asr). Parakeet quality: fp32 (full) or int8 (smaller, more word errors).
 ENGINES = ["whisper", "parakeet"]
 PARAKEET_QUALITIES = ["fp32", "int8"]
+
+# Max wait for one GPU transcription result. Long meeting recordings need
+# minutes even on GPU (medium ≈ 10-20x realtime → 2 h audio ≈ 6-12 min);
+# matches the AIfred-side WHISPER_TRANSCRIBE_TIMEOUT_S.
+_GPU_RESULT_TIMEOUT_S = int(os.environ.get("STT_GPU_RESULT_TIMEOUT_S", "1800"))
 
 _default_model = os.environ.get("WHISPER_MODEL", "medium")
 
@@ -89,10 +106,17 @@ _config: dict[str, Any] = {
     "gpu_engine": os.environ.get("STT_GPU_ENGINE", "whisper"),
     "cpu_quality": os.environ.get("STT_CPU_QUALITY", "fp32"),
     "gpu_quality": os.environ.get("STT_GPU_QUALITY", "fp32"),
-    # What `device=auto` tries, top to bottom: entries of device, engine and model (a Whisper size or a
-    # Parakeet precision), each one switched on or off. None until the first start fills it (see
-    # _default_auto_chain).
+    # What `device=auto` tries, top to bottom: entries of host (null = this machine, else the name of an entry
+    # of `hosts`), device, engine and model (a Whisper size or a Parakeet precision), each one switched on or
+    # off. None until the first start fills it (see _default_auto_chain).
     "auto_chain": None,
+    # Other machines running this suite: [{"name", "url", "token_file"}]; the auto list refers to them by name.
+    "hosts": [],
+    # A machine that is off answers nothing: the probe's short limit (ms) decides that, instead of the
+    # connection attempt's several seconds. A machine that is on gets host_timeout_s (s) for the transcription,
+    # as long as the own GPU does.
+    "host_probe_timeout_ms": int(os.environ.get("STT_HOST_PROBE_TIMEOUT_MS", "300")),
+    "host_timeout_s": int(os.environ.get("STT_HOST_TIMEOUT_S", _GPU_RESULT_TIMEOUT_S)),
     # Free VRAM (MiB) a card must keep beyond what a model takes before it is loaded there.
     "headroom_mib": int(os.environ.get("STT_HEADROOM_MIB", "256")),
 }
@@ -131,8 +155,8 @@ def _default_auto_chain() -> list[dict]:
     gpu_engine, cpu_engine = _config["gpu_engine"], _config["cpu_engine"]
     gpu = _config["gpu_quality"] if gpu_engine == "parakeet" else _config["gpu_model"]
     cpu = _config["cpu_quality"] if cpu_engine == "parakeet" else _config["cpu_model"]
-    return [{"device": "cuda", "engine": gpu_engine, "model": gpu, "enabled": True},
-            {"device": "cpu", "engine": cpu_engine, "model": cpu, "enabled": True}]
+    return [{"host": None, "device": "cuda", "engine": gpu_engine, "model": gpu, "enabled": True},
+            {"host": None, "device": "cpu", "engine": cpu_engine, "model": cpu, "enabled": True}]
 
 
 if _config["auto_chain"] is None:
@@ -209,11 +233,6 @@ _DIARIZE_TTL_MINUTES = int(os.environ.get("DIARIZE_TTL_MINUTES", "10"))
 # to 7.5 then to keep diarization on Turing or newer.
 _DIARIZE_MIN_COMPUTE_CAP = float(os.environ.get("DIARIZE_MIN_COMPUTE_CAP", "0"))
 _HF_TOKEN = os.environ.get("HF_TOKEN", "")
-
-# Max wait for one GPU transcription result. Long meeting recordings need
-# minutes even on GPU (medium ≈ 10-20x realtime → 2 h audio ≈ 6-12 min);
-# matches the AIfred-side WHISPER_TRANSCRIBE_TIMEOUT_S.
-_GPU_RESULT_TIMEOUT_S = int(os.environ.get("STT_GPU_RESULT_TIMEOUT_S", "1800"))
 
 
 # ── CPU Model (main process, permanent) ──────────────────────
@@ -820,7 +839,7 @@ def _rearm_gpu_ttl():
     _gpu_ttl_timer.start()
 
 
-class GpuUnavailable(Exception):
+class GpuUnavailable(CandidateUnavailable):
     """The GPU cannot take this model now: no card has room, or the worker is busy with another one."""
 
 
@@ -1484,6 +1503,7 @@ def _candidate(device: str, engine: str | None, model: str | None, quality: str 
     does not name is the configured value of that device."""
     prefix = "gpu" if device == "cuda" else "cpu"
     return {
+        "host": None,  # device=cuda means this machine; another one only comes in through the auto list
         "device": device,
         "engine": engine or _config[f"{prefix}_engine"],
         "model": model or _config[f"{prefix}_model"],
@@ -1496,6 +1516,7 @@ def _chain_candidate(entry: dict) -> dict:
     prefix = "gpu" if entry["device"] == "cuda" else "cpu"
     parakeet = entry["engine"] == "parakeet"
     return {
+        "host": entry["host"],
         "device": entry["device"],
         "engine": entry["engine"],
         "model": _config[f"{prefix}_model"] if parakeet else entry["model"],
@@ -1512,22 +1533,81 @@ def _plan(device: str, engine: str | None, model: str | None, quality: str | Non
 
 
 def _label(candidate: dict) -> str:
-    """The candidate for messages and answers: "cuda whisper large-v3", "cpu parakeet int8"."""
+    """The candidate for messages and answers: "cuda whisper large-v3", "Aragon cpu parakeet int8"."""
     detail = candidate["quality"] if candidate["engine"] == "parakeet" else candidate["model"]
-    return f"{candidate['device']} {candidate['engine']} {detail}"
+    where = f"{candidate['host']} " if candidate["host"] else ""
+    return f"{where}{candidate['device']} {candidate['engine']} {detail}"
 
 
-def _run_candidate(candidate: dict, work_path: str, language: str, segments: bool) -> dict:
-    """Transcribe with this candidate. :class:`GpuUnavailable` when the GPU cannot take it."""
+@dataclass
+class Job:
+    """One recording on its way through the plan."""
+    upload_path: str  # the recording as sent: what another machine gets
+    work_path: str  # 16 kHz WAV when decoded (diarization, Parakeet), else the upload
+    language: str
+    diarize: bool
+    num_speakers: int
+    diarize_queued: bool = False
+    diarize_tried: bool = False
+
+    def start_diarization(self) -> None:
+        """Queue the local diarization, at most once: only when the plan reaches a candidate on this machine,
+        since another machine's answer brings its own. Called right before that candidate runs, so the
+        two still run in parallel on their own cards."""
+        if not self.diarize or self.diarize_tried:
+            return
+        self.diarize_tried = True
+        # The worker reads the decoded PCM, so a failed conversion means no speaker labels, never a broken run.
+        self.diarize_queued = self.work_path != self.upload_path and _diarize_submit(self.work_path, self.num_speakers)
+        if not self.diarize_queued:
+            print("[Diarize] Could not start — returning plain transcript", flush=True)
+
+
+def _host_named(name: str) -> Host:
+    return Host(**next(host for host in _config["hosts"] if host["name"] == name))
+
+
+def _remote_fields(candidate: dict, job: Job) -> dict[str, str]:
+    """The form the suite on the other machine gets: this entry's device, engine and model, and the wish
+    for speaker labels, which that suite then fulfils itself."""
+    fields = {"device": candidate["device"], "engine": candidate["engine"], "language": job.language}
+    if candidate["engine"] == "parakeet":
+        fields["quality"] = candidate["quality"]
+    else:
+        fields["model"] = candidate["model"]
+    if job.diarize:
+        fields |= {"diarize": "1", "num_speakers": str(job.num_speakers)}
+    return fields
+
+
+def _run_on_host(candidate: dict, job: Job) -> dict:
+    """Hand the recording to the suite on another machine. :class:`RemoteUnavailable` when it cannot
+    take it; its answer is taken over as it is."""
+    host = _host_named(candidate["host"])
+    probe_host(host, _config["host_probe_timeout_ms"] / 1000)
+    print(f"[STT] Handing over to {host.name}: {_label(candidate)}", flush=True)
+    started = time.time()
+    result = transcribe_on_host(host, job.upload_path, _remote_fields(candidate, job), _config["host_timeout_s"])
+    print(f"[STT] {host.name} transcribed in {time.time() - started:.2f}s", flush=True)
+    result["host"] = host.name
+    return result
+
+
+def _run_candidate(candidate: dict, job: Job) -> dict:
+    """Transcribe with this candidate. :class:`CandidateUnavailable` when it cannot take it now."""
+    if candidate["host"]:
+        return _run_on_host(candidate, job)
+    job.start_diarization()
     engine, model, quality = candidate["engine"], candidate["model"], candidate["quality"]
     if candidate["device"] == "cuda":
-        result = _transcribe_gpu(work_path, language, segments, engine, model, quality)
+        result = _transcribe_gpu(job.work_path, job.language, job.diarize_queued, engine, model, quality)
     elif engine == "parakeet":
-        result = _transcribe_parakeet_cpu(work_path, language, quality, segments)
+        result = _transcribe_parakeet_cpu(job.work_path, job.language, quality, job.diarize_queued)
     else:
-        result = _transcribe_cpu(work_path, language, segments, model)
+        result = _transcribe_cpu(job.work_path, job.language, job.diarize_queued, model)
     if "error" not in result:
         # The answer names what really transcribed.
+        result["host"] = None
         result["device"] = candidate["device"]
         result["engine"] = engine
         if engine == "parakeet":
@@ -1537,26 +1617,55 @@ def _run_candidate(candidate: dict, work_path: str, language: str, segments: boo
     return result
 
 
-def _run_plan(plan: list[dict], work_path: str, language: str, segments: bool) -> tuple[dict, list[dict]]:
+def _run_plan(plan: list[dict], job: Job) -> tuple[dict, list[dict]]:
     """Walk the plan until one candidate transcribes. Returns its result and the entries that
     could not take it (with the reason), so an answer after a fallback says what happened.
-    Raises :class:`GpuUnavailable` when no candidate could (a single GPU candidate, or a list
+    Raises :class:`CandidateUnavailable` when no candidate could (a single candidate, or a list
     that does not end with the CPU)."""
     skipped: list[dict] = []
     remaining = list(plan)
     while remaining:
         candidate = remaining.pop(0)
         try:
-            return _run_candidate(candidate, work_path, language, segments), skipped
-        except GpuUnavailable as unavailable:
+            return _run_candidate(candidate, job), skipped
+        except CandidateUnavailable as unavailable:
             skipped.append({"tried": _label(candidate), "reason": str(unavailable)})
             if isinstance(unavailable, GpuWithdrawn):
-                # Another GPU model would take the card straight back from whoever freed it.
-                skipped += [{"tried": _label(c), "reason": str(unavailable)} for c in remaining if c["device"] == "cuda"]
-                remaining = [c for c in remaining if c["device"] != "cuda"]
+                # Another GPU model would take the card straight back from whoever freed it. The cards of
+                # other machines are not meant by that.
+                withdrawn = [c for c in remaining if c["device"] == "cuda" and not c["host"]]
+                skipped += [{"tried": _label(c), "reason": str(unavailable)} for c in withdrawn]
+                remaining = [c for c in remaining if c not in withdrawn]
+            elif isinstance(unavailable, HostUnreachable):
+                # Asking the same machine again for its next entry would only wait out the probe once more.
+                # A machine that answers but refuses (503: its card is full) keeps its other entries.
+                unreachable = [c for c in remaining if c["host"] == candidate["host"]]
+                skipped += [{"tried": _label(c), "reason": str(unavailable)} for c in unreachable]
+                remaining = [c for c in remaining if c not in unreachable]
             following = f" — next: {_label(remaining[0])}" if remaining else ""
             print(f"[STT] {_label(candidate)} not possible ({unavailable}){following}", flush=True)
-    raise GpuUnavailable("; ".join(f"{entry['tried']}: {entry['reason']}" for entry in skipped))
+    raise CandidateUnavailable("; ".join(f"{entry['tried']}: {entry['reason']}" for entry in skipped))
+
+
+def _host_state(host: dict) -> dict:
+    """One configured machine as the page shows it: reachable with what its suite reports, or why not."""
+    state = {"name": host["name"], "url": host["url"], "reachable": True, "error": None, "health": None}
+    try:
+        state["health"] = host_health(Host(**host), _config["host_probe_timeout_ms"] / 1000)
+    except RemoteUnavailable as unavailable:
+        state.update(reachable=False, error=str(unavailable))
+    return state
+
+
+@app.route("/hosts", methods=["GET"])
+def hosts_state():
+    """The other machines of the config and whether their suite answers `GET /health`, asked in parallel so
+    that a machine that is off does not hold up the others."""
+    hosts = list(_config["hosts"])
+    if not hosts:
+        return jsonify({"hosts": []})
+    with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
+        return jsonify({"hosts": list(pool.map(_host_state, hosts))})
 
 
 @app.route("/transcribe", methods=["POST"])
@@ -1566,9 +1675,10 @@ def transcribe():
     Form data:
         file:         Audio file (WAV, MP3, M4A, OGG, FLAC, WebM)
         device:       "cpu" or "cuda" (default: "cpu"): exactly the configured model of that
-                      device, or a 503 when the GPU has no room for it. "auto": the configured
-                      GPU model, then smaller ones, then the configured CPU model; the answer
-                      lists what could not take it (`fallback`).
+                      device ON THIS MACHINE, or a 503 when the GPU has no room for it. "auto":
+                      the entries of the auto list from the top, on this machine or another
+                      one running this suite; the answer lists what could not take it
+                      (`fallback`) and names the machine that did (`host`, null = this one).
         language:     Language code, e.g. "de", "en" (default: from config)
         diarize:      "1" to label speakers (default: off — pointless for
                       short voice commands, only worth it for interviews)
@@ -1619,34 +1729,34 @@ def transcribe():
         # decoded audio). Without diarization Whisper decodes internally as
         # before, so nothing changes for the common short-command case.
         # Parakeet (onnx-asr) reads only WAV, so it always gets the decoded file.
-        parakeet_possible = any(candidate["engine"] == "parakeet" for candidate in plan)
-        if diarize or parakeet_possible:
+        # Another machine decodes by itself: only entries on this one count.
+        local = [candidate for candidate in plan if not candidate["host"]]
+        parakeet_possible = any(candidate["engine"] == "parakeet" for candidate in local)
+        if local and (diarize or parakeet_possible):
             work_path = _decode_to_wav16k(tmp_path)
             if parakeet_possible and work_path == tmp_path:
                 return _error(500, "decode_failed", "Audio could not be decoded to 16 kHz WAV")
 
-        # Queue diarization FIRST so it runs on its own card while Whisper
-        # transcribes — the two jobs never touch, so the wall-clock cost of
-        # speaker labels is close to zero. It needs the decoded WAV (the
-        # worker reads PCM directly instead of using pyannote's decoder), so
-        # a failed conversion means no speaker labels — never a broken run.
-        wav_ready = diarize and work_path != tmp_path
-        diarize_queued = _diarize_submit(work_path, num_speakers) if wav_ready else False
-        if diarize and not diarize_queued:
-            print("[Diarize] Could not start — returning plain transcript", flush=True)
-
+        # The local diarization is queued by the plan right before the first local candidate runs (so it
+        # runs on its own card while that one transcribes, and not at all when another machine does it).
+        job = Job(upload_path=tmp_path, work_path=work_path, language=language, diarize=diarize, num_speakers=num_speakers)
         try:
-            result, skipped = _run_plan(plan, work_path, language, diarize_queued)
-        except GpuUnavailable as unavailable:
-            # 503 (not 500): tells the client "the GPU cannot take this model now" — distinct from
-            # real errors. Which device to use instead is the client's choice (or `device=auto`).
-            if diarize_queued:
+            result, skipped = _run_plan(plan, job)
+        except CandidateUnavailable as unavailable:
+            # 503 (not 500): tells the client "nothing can take this now" — distinct from real errors.
+            # Which device to use instead is the client's choice (or `device=auto`).
+            if job.diarize_queued:
                 _diarize_collect(timeout=10)  # drain, worker already ran
-            return _error(503, "gpu_unavailable", f"GPU unavailable: {unavailable}")
+            return _error(503, "unavailable", f"Unavailable: {unavailable}")
         if "error" in result:
             return _error(500, "transcription_failed", result["error"])
 
-        if diarize_queued:
+        if result["host"]:
+            # The other machine's answer carries its own speaker labels; the local diarization, started
+            # before the plan came to it, is of no use.
+            if job.diarize_queued:
+                _diarize_collect(timeout=10)
+        elif job.diarize_queued:
             dia = _diarize_collect(timeout=_GPU_RESULT_TIMEOUT_S)
             segments = result.pop("segments", None)
             if dia and "turns" in dia and segments:
@@ -1856,20 +1966,49 @@ _NUMBERS = {
     "beam_size": lambda value: max(1, min(20, int(value))),
     "num_speakers": lambda value: max(0, min(10, int(value))),
     "headroom_mib": lambda value: max(0, int(value)),
+    "host_probe_timeout_ms": lambda value: max(50, int(value)),
+    "host_timeout_s": lambda value: max(1, int(value)),
 }
 _FLAGS = ("vad_filter", "condition_on_previous_text")
 _TEXTS = ("language", "initial_prompt")
 
 
-def _valid_auto_chain(chain: object) -> str | None:
-    """Why this is no auto list (None when it is one): a list of entries with a device, an engine, a
-    model that engine has — a Whisper size or a Parakeet precision — and whether it is switched on;
-    at least one on."""
+_HOST_KEYS = {"name", "url", "token_file"}
+
+
+def _valid_hosts(hosts: object) -> str | None:
+    """Why this is no list of hosts (None when it is one): dicts with a name (unique), a URL starting with
+    http:// or https:// and the file holding that machine's token."""
+    if not isinstance(hosts, list):
+        return "hosts must be a list"
+    names: list[object] = []
+    for host in hosts:
+        if not isinstance(host, dict) or set(host) != _HOST_KEYS:
+            return f"hosts entry {host!r}: needs exactly name, url and token_file"
+        if not all(isinstance(host[key], str) for key in _HOST_KEYS):
+            return f"hosts entry {host!r}: name, url and token_file are texts"
+        if not host["name"] or not host["token_file"]:
+            return f"hosts entry {host!r}: name and token_file must not be empty"
+        if not host["url"].startswith(("http://", "https://")):
+            return f"hosts entry {host!r}: url must start with http:// or https://"
+        if host["name"] in names:
+            return f"hosts: the name {host['name']!r} is used twice"
+        names.append(host["name"])
+    return None
+
+
+def _valid_auto_chain(chain: object, hosts: list[dict]) -> str | None:
+    """Why this is no auto list (None when it is one): a list of entries with a host (null = this machine,
+    else the name of one of `hosts`), a device, an engine, a model that engine has — a Whisper size or a
+    Parakeet precision — and whether it is switched on; at least one on."""
     if not isinstance(chain, list) or not any(isinstance(entry, dict) and entry.get("enabled") is True for entry in chain):
         return "auto_chain must be a list with at least one entry that is enabled"
+    host_names = [host["name"] for host in hosts]
     for entry in chain:
-        if not isinstance(entry, dict) or set(entry) != {"device", "engine", "model", "enabled"}:
-            return f"auto_chain entry {entry!r}: needs device, engine, model and enabled"
+        if not isinstance(entry, dict) or set(entry) != {"host", "device", "engine", "model", "enabled"}:
+            return f"auto_chain entry {entry!r}: needs host, device, engine, model and enabled"
+        if entry["host"] is not None and entry["host"] not in host_names:
+            return f"auto_chain entry {entry!r}: host is null (this machine) or the name of one of hosts {host_names}"
         if (entry["device"] not in ("cpu", "cuda") or entry["engine"] not in ENGINES or entry["model"] not in _models_of(entry["engine"])
                 or not isinstance(entry["enabled"], bool)):
             return (f"auto_chain entry {entry!r}: device is cpu or cuda, engine one of {ENGINES}, model a Whisper "
@@ -1886,13 +2025,18 @@ def config_endpoint():
                         "parakeet_qualities": PARAKEET_QUALITIES, "devices": DEVICES})
 
     data = request.get_json(silent=True) or {}
-    unknown = sorted(set(data) - set(_CHOICES) - set(_NUMBERS) - set(_FLAGS) - set(_TEXTS) - {"auto_chain"})
+    unknown = sorted(set(data) - set(_CHOICES) - set(_NUMBERS) - set(_FLAGS) - set(_TEXTS) - {"auto_chain", "hosts"})
     if unknown:
         return _error(400, "bad_request", f"Unknown settings: {unknown}")
     for key, allowed in _CHOICES.items():
         if key in data and data[key] not in allowed:
             return _error(400, "bad_request", f"Invalid {key}: {data[key]!r}. Use one of {allowed}")
-    if "auto_chain" in data and (invalid := _valid_auto_chain(data["auto_chain"])):
+    if "hosts" in data and (invalid := _valid_hosts(data["hosts"])):
+        return _error(400, "bad_request", invalid)
+    # The list is checked against the hosts that hold after this request, also when only the hosts change:
+    # a machine the list still uses cannot go.
+    if ("auto_chain" in data or "hosts" in data) and (
+            invalid := _valid_auto_chain(data.get("auto_chain", _config["auto_chain"]), data.get("hosts", _config["hosts"]))):
         return _error(400, "bad_request", invalid)
     try:
         received = {key: _NUMBERS[key](data[key]) for key in _NUMBERS if key in data}
@@ -1901,8 +2045,7 @@ def config_endpoint():
     received |= {key: data[key] for key in _CHOICES if key in data}
     received |= {key: bool(data[key]) for key in _FLAGS if key in data}
     received |= {key: str(data[key]) for key in _TEXTS if key in data}
-    if "auto_chain" in data:
-        received["auto_chain"] = data["auto_chain"]
+    received |= {key: data[key] for key in ("auto_chain", "hosts") if key in data}
 
     changed = [key for key, value in received.items() if _config[key] != value]
     _config.update(received)
@@ -1924,6 +2067,17 @@ def config_endpoint():
 _invalid = {key: _config[key] for key, allowed in _CHOICES.items() if _config[key] not in allowed}
 if _invalid:
     raise SystemExit(f"Invalid settings {_invalid}: " + ", ".join(f"{key} one of {allowed}" for key, allowed in _CHOICES.items()))
+
+
+def _require_valid_lists() -> None:
+    """A saved list in an older shape (an auto list without `host`) is not mended: the service stops and says so."""
+    problem = _valid_hosts(_config["hosts"]) or _valid_auto_chain(_config["auto_chain"], _config["hosts"])
+    if problem:
+        raise SystemExit(f"{_CONFIG_FILE}: {problem} — fix or delete the file")
+
+
+_require_valid_lists()
+
 
 def _preload_cpu():
     """Load the CPU model of the configured engine now and drop the other engine's CPU

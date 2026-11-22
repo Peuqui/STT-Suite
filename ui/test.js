@@ -90,13 +90,13 @@ export function testView({ show, fail }) {
 
   function resultView() {
     if (result === null) return null
-    const { text, text_speakers: withSpeakers, fallback, ...rest } = result
+    const { text, text_speakers: withSpeakers, fallback, host, ...rest } = result
     return h('div', {},
       h('h3', {}, t('transcript')), h('div', { class: 'transcript' }, text ?? ''),
       withSpeakers ? [h('h3', {}, t('speakersText')), h('div', { class: 'transcript' }, withSpeakers)] : null,
       fallback ? [h('h3', {}, t('fallbackUsed')), h('ul', {}, fallback.map((entry) => h('li', {}, `${entry.tried}: ${entry.reason}`)))] : null,
       h('h3', {}, t('result')),
-      h('div', { class: 'fields' }, Object.entries(rest).flatMap(([key, value]) => [h('label', {}, fieldLabel(key)), h('code', {}, typeof value === 'object' ? JSON.stringify(value) : typeof value === 'number' ? formatNumber(value) : String(value))])))
+      h('div', { class: 'fields' }, h('label', {}, t('field_host')), h('code', {}, host ?? t('thisMachine')), Object.entries(rest).flatMap(([key, value]) => [h('label', {}, fieldLabel(key)), h('code', {}, typeof value === 'object' ? JSON.stringify(value) : typeof value === 'number' ? formatNumber(value) : String(value))])))
   }
 
   function render() {

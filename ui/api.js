@@ -42,6 +42,7 @@ export async function json(path, { method = 'GET', body } = {}) {
 export const service = {
   status: () => json('../status'),
   engines: () => json('../engines'),
+  hosts: () => json('../hosts'),
   config: () => json('../config'),
   saveConfig: (config) => json('../config', { method: 'POST', body: config }),
   unloadCpu: () => json('../unload', { method: 'POST' }),

@@ -10,6 +10,7 @@ export function catalogView({ show, fail }) {
   const root = h('div')
   let rows = []
   let status = null
+  let hosts = []
   let burnIn = { running: false }
   // A release the GPU refused because it is transcribing: offered once more with force.
   let offerForce = false
@@ -18,7 +19,7 @@ export function catalogView({ show, fail }) {
 
   async function load() {
     try {
-      ;[rows, status, burnIn] = await Promise.all([service.engines(), service.status(), service.burnIn()])
+      ;[rows, status, burnIn, { hosts }] = await Promise.all([service.engines(), service.status(), service.burnIn(), service.hosts()])
       render()
       if (burnIn.running) followBurnIn()
     } catch (error) { fail(error) }
@@ -114,7 +115,24 @@ export function catalogView({ show, fail }) {
       burnIn.running ? h('p', { class: 'status busy' }, burnInText()) : null,
       cardTable([t('engine'), t('model'), t('state'), t('memoryNeeded'), t('source'), ''],
         rows.map((row) => [row.engine, row.model, stateOf(row), formatNumber(row.needed_mib), measured(row), buttons(row)])),
+      hostsView(),
     )
+  }
+
+  // What a loaded model of another machine's suite is: "parakeet-fp32" or the Whisper size, or that nothing is.
+  const loadedOn = (health, device) => (health[`${device}_loaded`] ? `${health[`${device}_engine`]} ${health[`${device}_model`]}` : t('nothingLoadedThere'))
+
+  // The other machines of the auto list: whether their suite answers, and what it holds. Written as text,
+  // since a phone has no mouse-over.
+  function hostsView() {
+    if (hosts.length === 0) return null
+    return h('div', {},
+      h('h2', {}, t('groupHosts')),
+      h('p', { class: 'muted' }, t('hostsStateHint')),
+      cardTable([t('hostName'), t('hostUrl'), t('state'), t('cpu'), t('gpu')],
+        hosts.map((host) => [host.name, host.url,
+          h('span', { class: `status ${host.reachable ? 'loaded' : 'busy'}` }, host.reachable ? t('reachable') : `${t('unreachable')}: ${host.error}`),
+          host.reachable ? loadedOn(host.health, 'cpu') : '', host.reachable ? loadedOn(host.health, 'gpu') : ''])))
   }
 
   function burnInText() {

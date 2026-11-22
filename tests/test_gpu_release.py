@@ -163,12 +163,15 @@ def test_a_withdrawn_gpu_counts_as_unavailable_so_auto_goes_on_on_the_cpu(monkey
     assert server._gpu_busy is False
 
 
+_JOB = server.Job("audio.wav", "audio.wav", "de", diarize=False, num_speakers=0)
+
+
 def test_after_a_withdrawal_auto_skips_the_other_gpu_entries(monkeypatch: pytest.MonkeyPatch) -> None:
     # Found live (25.10.): after the release, auto took the next cuda entry and loaded a new worker on the freed card.
     plan = [
-        {"device": "cuda", "engine": "parakeet", "model": "medium", "quality": "fp32"},
-        {"device": "cuda", "engine": "whisper", "model": "medium", "quality": "float16"},
-        {"device": "cpu", "engine": "parakeet", "model": "medium", "quality": "fp32"},
+        {"host": None, "device": "cuda", "engine": "parakeet", "model": "medium", "quality": "fp32"},
+        {"host": None, "device": "cuda", "engine": "whisper", "model": "medium", "quality": "float16"},
+        {"host": None, "device": "cpu", "engine": "parakeet", "model": "medium", "quality": "fp32"},
     ]
     tried: list[str] = []
 
@@ -179,7 +182,7 @@ def test_after_a_withdrawal_auto_skips_the_other_gpu_entries(monkeypatch: pytest
         return {"text": "ok"}
 
     monkeypatch.setattr(server, "_run_candidate", run)
-    result, skipped = server._run_plan(plan, "audio.wav", "de", False)
+    result, skipped = server._run_plan(plan, _JOB)
     assert tried == ["cuda parakeet fp32", "cpu parakeet fp32"]
     assert result == {"text": "ok"}
     assert [entry["tried"] for entry in skipped] == ["cuda parakeet fp32", "cuda whisper medium"]
@@ -187,8 +190,8 @@ def test_after_a_withdrawal_auto_skips_the_other_gpu_entries(monkeypatch: pytest
 
 def test_without_room_auto_still_tries_the_next_gpu_model(monkeypatch: pytest.MonkeyPatch) -> None:
     plan = [
-        {"device": "cuda", "engine": "whisper", "model": "large-v3", "quality": "float16"},
-        {"device": "cuda", "engine": "whisper", "model": "medium", "quality": "float16"},
+        {"host": None, "device": "cuda", "engine": "whisper", "model": "large-v3", "quality": "float16"},
+        {"host": None, "device": "cuda", "engine": "whisper", "model": "medium", "quality": "float16"},
     ]
     tried: list[str] = []
 
@@ -199,5 +202,5 @@ def test_without_room_auto_still_tries_the_next_gpu_model(monkeypatch: pytest.Mo
         return {"text": "ok"}
 
     monkeypatch.setattr(server, "_run_candidate", run)
-    assert server._run_plan(plan, "audio.wav", "de", False)[0] == {"text": "ok"}
+    assert server._run_plan(plan, _JOB)[0] == {"text": "ok"}
     assert tried == ["cuda whisper large-v3", "cuda whisper medium"]

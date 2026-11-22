@@ -101,6 +101,7 @@ fieldset > p { margin: 4px 0 8px; }
 .chain { margin: 6px 0; }
 .chain.off > :not(.switch):not(button) { opacity: 0.45; }
 .chain .muted { flex: 1; text-align: right; }
+.row.host input[type="text"] { flex: 1 1 12em; min-width: 0; }
 label.switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: none; }
 label.switch input { opacity: 0; width: 0; height: 0; }
 label.switch span { position: absolute; inset: 0; background: var(--line); border-radius: 22px; cursor: pointer; transition: background 0.15s; }

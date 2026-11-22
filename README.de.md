@@ -24,8 +24,9 @@ heißt `stt-suite`.)
   Karte den dafür nötigen freien VRAM hat (`vram_mib.json`); es wird nichts still ersetzt.
 - **`device=auto` für einen Rückfall, den du verlangst:** geht eine Liste durch, die du einstellst (`auto_chain` in der
   Konfiguration, auf der Webseite unter Konfiguration: Einträge aus Gerät, Engine und Modell, die sich verschieben,
-  ausschalten, ändern und hinzufügen lassen; zuerst das eingestellte GPU-Modell, dann das eingestellte CPU-Modell). Der erste
-  Eintrag, der kann, nimmt die Anfrage. Was kann, ergibt sich aus der Tabelle des VRAM-Bedarfs und einer
+  ausschalten, ändern und hinzufügen lassen; zuerst das eingestellte GPU-Modell, dann das eingestellte CPU-Modell). Ein Eintrag
+  hat `host`, `device`, `engine`, `model` und `enabled`; `host` ist `null` (dieser Rechner) oder der Name eines Rechners aus
+  `hosts` (siehe unten). Der erste Eintrag, der kann, nimmt die Anfrage. Was kann, ergibt sich aus der Tabelle des VRAM-Bedarfs und einer
   `nvidia-smi`-Abfrage, ohne etwas probeweise zu laden, und bevor ein geladenes Modell losgelassen wird: Ein Modell, das sich nicht
   laden lässt, kostet nie das, das geladen ist. Die Antwort nennt, womit transkribiert wurde, und listet in `fallback`, was nicht
   konnte und warum.
@@ -82,6 +83,7 @@ Anfrage kommt. Die Modelle liegen im Docker-Volume `stt_suite_models` und übers
 | GET | `/health` | Bereitschaft: `status`, `model_loaded`, geladene Modelle je Gerät |
 | GET | `/status` | Ausführlicher Status und die vollständige Laufzeit-Konfiguration |
 | GET/POST | `/config` | Laufzeit-Konfiguration lesen oder ändern (JSON) |
+| GET | `/hosts` | Die Rechner aus `hosts` und ob ihre Suite antwortet, parallel gefragt (Grenze `host_probe_timeout_ms`): `{"hosts": [{"name", "url", "reachable", "error", "health"}]}`, `health` ist das `GET /health` der Gegenseite, `error` der Grund, wenn sie nicht antwortet |
 | GET | `/engines` | Jedes Modell jeder Engine: `engine`, `model`, `loaded_on` (Geräte), `needed_mib` (was eine Karte frei haben muss: Bedarf plus Aufschlag), `measured` (per Burn-in gemessen, sonst Schätzung). Wie der Katalog der TTS-Suite |
 | POST | `/unload` | Die CPU-Modelle entladen (die GPU-Worker: `/gpu/release`) |
 | GET | `/gpu/holders` | Die GPU-Worker, die laufen: `item`, `gpu_uuids` (die Karte, auf der er gestartet wurde), `memory_mib` (was der GPU-Worker beim Laden belegt hat), `busy` |
@@ -103,15 +105,23 @@ Anfrage kommt. Die Modelle liegen im Docker-Volume `stt_suite_models` und übers
 | `quality` | nur Parakeet: `fp32` oder `int8`; Standard `cpu_quality` bzw. `gpu_quality`, je nach Gerät |
 
 Die Antwort ist JSON mit `text`, der benötigten Zeit, dem verwendeten Gerät und der Engine mit ihrem Modell (`model` bei
-Whisper, `quality` bei Parakeet); nach einem Rückfall auch `fallback`, die Liste dessen, was die Anfrage nicht übernehmen
-konnte, je mit `tried` und `reason`. Fehler: `400` bei fehlender Datei oder ungültigem Wert, `503`, wenn die GPU für das Modell
-keinen Platz hat (oder mit einem anderen beschäftigt ist), sonst `500`. Eine Ablehnung ist JSON `{"error": <Code>, "detail": <Text>}`,
-wie bei der TTS-Suite; die Codes sind `bad_request`, `unauthorized` (`401`, siehe [Sicherheit](#sicherheit)), `gpu_unavailable`, `gpu_busy`,
+Whisper, `quality` bei Parakeet) und `host`, dem Rechner, der transkribiert hat (`null` = dieser); nach einem Rückfall auch
+`fallback`, die Liste dessen, was die Anfrage nicht übernehmen konnte, je mit `tried` (bei einem anderen Rechner mit dessen Namen
+vorn) und `reason`. Fehler: `400` bei fehlender Datei oder ungültigem Wert, `503`, wenn kein Kandidat die Anfrage übernehmen kann
+(die GPU hat keinen Platz oder ist mit einem anderen beschäftigt, ein anderer Rechner ist aus oder lehnt ab; `detail` nennt alle
+Gründe), sonst `500`. Eine Ablehnung ist JSON `{"error": <Code>, "detail": <Text>}`,
+wie bei der TTS-Suite; die Codes sind `bad_request`, `unauthorized` (`401`, siehe [Sicherheit](#sicherheit)), `unavailable`, `gpu_busy`,
 `model_loading`, `burn_in_running`, `decode_failed` und `transcription_failed`.
 
 ```
 curl -F file=@sprache.webm -F device=cuda http://localhost:5080/transcribe
 ```
+
+## Aktualisieren von vor dem 22. November 2026
+
+Jeder Eintrag einer gespeicherten `auto_chain` braucht jetzt ein `host` (`null` = dieser Rechner). Der Dienst bessert eine ältere
+Liste nicht aus: Er bricht beim Start ab und sagt es; in der `config.json` des Zustands-Volumes an jedem Eintrag `"host": null`
+ergänzen.
 
 ## Aktualisieren von vor dem 5. November 2026
 
@@ -158,6 +168,8 @@ In `docker-compose.yml` oder als Umgebungsvariablen beim Start von Compose:
 | `PARAKEET_BATCH` | `1` | So viele Stücke erkennt Parakeet auf einmal. Bei 1 braucht eine lange Aufnahme nicht mehr VRAM als ein Stück, und der Burn-in (mit einer Aufnahme von mindestens `PARAKEET_CHUNK_S`) misst genau diese Grenze; bei mehr wächst der Bedarf mit der Länge bis zum Vielfachen |
 | `STT_VRAM_FILE` | `vram_mib.json` | Freier VRAM (MiB), den eine Karte braucht, bevor ein Modell darauf geladen wird, je Whisper-Größe und Parakeet-Genauigkeit: Schätzwerte, ersetzt durch das, was ein Burn-in gemessen hat |
 | `STT_VRAM_MEASURED_FILE` | `/state/vram_measured.json` | Wo die gemessenen Werte liegen (Volume `stt_suite_state`); löschen, um zu den Schätzwerten zurückzukehren |
+| `STT_HOST_PROBE_TIMEOUT_MS` | `300` | Erste Einstellung von `host_probe_timeout_ms`: so lange wartet die Suite auf `GET /health` eines anderen Rechners; ein ausgeschalteter antwortet nie, die kurze Grenze entscheidet das schnell (mindestens 50) |
+| `STT_HOST_TIMEOUT_S` | wie `STT_GPU_RESULT_TIMEOUT_S` | Erste Einstellung von `host_timeout_s`: so lange darf ein anderer Rechner für die Transkription brauchen (mindestens 1) |
 | `STT_HEADROOM_MIB` | `256` | Aufschlag: freier VRAM, der auf einer Karte über den Bedarf eines Modells hinaus bleibt; auch auf der Webseite einstellbar |
 | `STT_MEMORY_LIMIT` | `16g` | Arbeitsspeicher, den der Container nutzen darf, ohne Swap obendrauf: Das CPU-Modell bleibt im RAM, statt in Pausen ausgelagert zu werden (das machte das erste Diktat nach einer Pause um Sekunden langsamer). Harte Grenze: Darüber beendet der Kernel einen Prozess im Container, also deutlich über dem Spitzenbedarf ansetzen |
 
@@ -208,11 +220,18 @@ Erst mit Token lässt sich der Dienst für andere Rechner öffnen: `STT_HOST=0.0
 lehnt er das beim Start ab. Die Verbindung selbst ist unverschlüsselt; außerhalb eines vertrauenswürdigen Netzes gehört er hinter
 einen Reverse-Proxy mit HTTPS.
 
-## Ausblick: die GPU eines anderen Rechners
+## Andere Rechner
 
-Wie die TTS-Suite soll die STT-Suite auch die GPU eines anderen Rechners nutzen können (etwa Aragon,
-wenn auf dem Mini ein großes Modell den Grafikspeicher belegt). Plan und Voraussetzungen:
-[docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md) (noch nicht gebaut).
+Die Automatik-Liste kann eine Aufnahme an dieselbe Suite auf einem anderen Rechner weiterreichen (etwa Aragon, wenn auf diesem
+Rechner ein großes Modell den Grafikspeicher belegt). Die Einstellung `hosts` führt sie auf: `[{"name": "Aragon", "url":
+"http://aragon:5080", "token_file": "/pfad/zum/token"}]` (die Token-Datei enthält das Token jenes Rechners, siehe
+[Sicherheit](#sicherheit)). Ein Eintrag von `auto_chain` mit `"host": "Aragon"` geht dorthin: Die Suite fragt `GET /health`
+(Grenze `host_probe_timeout_ms`), schickt die Aufnahme dann an `POST /transcribe` mit `device`, `engine` und `model` des Eintrags
+und übernimmt die Antwort (Grenze `host_timeout_s`). Ist der Rechner aus, antwortet er nicht rechtzeitig oder mit etwas anderem
+als `200`, geht die Liste mit dem nächsten Eintrag weiter. Ein Rechner, der auf `GET /health` gar nicht antwortet, wird in
+derselben Anfrage nicht noch einmal gefragt: Seine übrigen Einträge fallen mit weg (einer, der antwortet, aber ablehnt, etwa mit
+`503` bei voller Karte, behält sie). Die Sprechertrennung (`diarize=1`) macht der Rechner, der transkribiert.
+`device=cuda` und `device=cpu` meinen immer diesen Rechner. Auf der Webseite: Reiter Konfiguration, Abschnitt „Rechner“ (Name, Adresse, Token-Datei als Pfad im Container, die zwei Wartezeiten) und in der Automatik-Liste je Eintrag die Auswahl des Rechners; benutzt ein Eintrag einen Rechner, der oben fehlt, ist er markiert und Speichern ausgegraut. Reiter Engines: je Rechner erreichbar oder nicht (mit Grund) und was dort geladen ist (`GET /hosts`, im selben Takt wie der Rest). Reiter Probe: die Antwort nennt den Rechner und listet den Rückfall. Hintergrund und Plan: [docs/PLAN-ANDERE-RECHNER.de.md](docs/PLAN-ANDERE-RECHNER.de.md).
 
 ## Star History
 
